@@ -15,8 +15,8 @@ PORTFOLIO_FILE = "portfolio.xlsx"
 
 SPREADSHEET_NAME = "Stock Bot Dashboard"
 
-TELEGRAM_TOKEN = "8630503074:AAHgONEVwJB_QVZ1GeKBaVGl9Z3Ct0E_yLw"
-CHAT_ID = "8258280498"
+TELEGRAM_TOKEN = "YOUR_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
 
 
 def super_smoother(price, period):
@@ -41,10 +41,16 @@ def super_smoother(price, period):
 
 def rolling_cross(close, ssf, lookback):
 
+    cross_found = False
+
     for i in range(1, lookback):
 
         if close[-i - 1] < ssf[-i - 1] and close[-i] > ssf[-i]:
-            return True
+            cross_found = True
+            break
+
+    if cross_found and close[-1] > ssf[-1]:
+        return True
 
     return False
 
@@ -149,10 +155,6 @@ for stock in stocks:
 
         market_cap = info.get("marketCap")
         if market_cap is None or market_cap < MARKET_CAP_LIMIT:
-            continue
-
-        pe = info.get("trailingPE")
-        if pe is None or pe > 40:
             continue
 
         pb = info.get("priceToBook")
@@ -316,6 +318,7 @@ Google Sheet Updated Successfully
 send_telegram_message(message)
 
 print("Telegram notification sent.")
+
 
 
 
