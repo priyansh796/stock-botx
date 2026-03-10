@@ -15,8 +15,8 @@ PORTFOLIO_FILE = "portfolio.xlsx"
 
 SPREADSHEET_NAME = "Stock Bot Dashboard"
 
-TELEGRAM_TOKEN = "YOUR_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+TELEGRAM_TOKEN = "8630503074:AAHgONEVwJB_QVZ1GeKBaVGl9Z3Ct0E_yLw"
+CHAT_ID = "8258280498"
 
 
 def super_smoother(price, period):
@@ -318,6 +318,7 @@ Google Sheet Updated Successfully
 send_telegram_message(message)
 
 print("Telegram notification sent.")
+
 
 
 
