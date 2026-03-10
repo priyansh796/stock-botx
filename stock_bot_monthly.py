@@ -8,7 +8,7 @@ from google.oauth2.service_account import Credentials
 import requests
 from datetime import datetime
 
-MARKET_CAP_LIMIT = 5000 * 10**7
+MARKET_CAP_LIMIT = 1000 * 10**7
 MONTHLY_HISTORY = "15y"
 WEEKLY_HISTORY = "5y"
 PORTFOLIO_FILE = "portfolio.xlsx"
@@ -157,24 +157,40 @@ for stock in stocks:
         if market_cap is None or market_cap < MARKET_CAP_LIMIT:
             continue
 
-        pb = info.get("priceToBook")
-        if pb is not None and pb > 6:
+        eps = info.get("trailingEps")
+        if eps is None or eps <= 0:
+            continue
+
+        dividend_yield = info.get("dividendYield")
+        if dividend_yield is None or dividend_yield <= 0:
             continue
 
         roe = info.get("returnOnEquity")
-        if roe is not None and roe < 0.10:
+        if roe is None or roe < 0.10:
             continue
 
         debt_equity = info.get("debtToEquity")
-        if debt_equity is not None and debt_equity > 1.5:
+        if debt_equity is not None and debt_equity > 3:
+            continue
+
+        current_ratio = info.get("currentRatio")
+        if current_ratio is not None and current_ratio < 1.5:
+            continue
+
+        peg_ratio = info.get("pegRatio")
+        if peg_ratio is None or peg_ratio < 1:
+            continue
+
+        operating_cashflow = info.get("operatingCashflow")
+        if operating_cashflow is None or operating_cashflow <= 0:
+            continue
+
+        free_cashflow = info.get("freeCashflow")
+        if free_cashflow is None or free_cashflow <= 0:
             continue
 
         profit_margin = info.get("profitMargins")
-        if profit_margin is not None and profit_margin <= 0:
-            continue
-
-        eps = info.get("trailingEps")
-        if eps is None or eps <= 0:
+        if profit_margin is None or profit_margin <= 0:
             continue
 
         fundamental_pass.append(stock)
@@ -318,6 +334,7 @@ Google Sheet Updated Successfully
 send_telegram_message(message)
 
 print("Telegram notification sent.")
+
 
 
 
