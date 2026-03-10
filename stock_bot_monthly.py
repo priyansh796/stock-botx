@@ -215,14 +215,19 @@ for stock in stocks:
         monthly_df['RSI_MA'] = monthly_df['RSI'].rolling(14).mean()
 
         rsi_m_latest = monthly_df.iloc[-1]
+        m_latest = monthly_df.iloc[-1]
 
         monthly_cross = rolling_cross(m_close, ssf50, lookback=3)
         monthly_setup = rolling_setup_monthly(monthly_df, lookback=12)
 
-        if monthly_setup and monthly_cross and rsi_m_latest['RSI'] > rsi_m_latest['RSI_MA']:
+        if (
+            monthly_setup
+            and monthly_cross
+            and rsi_m_latest['RSI'] > rsi_m_latest['RSI_MA']
+            and m_latest['SSF_50'] < m_latest['SSF_200']
+            and m_latest['SSF_50'] < m_latest['SSF_250']
+        ):
             monthly_buy.append(stock)
-
-        m_latest = monthly_df.iloc[-1]
 
         ssf_structure_ok = (
             m_latest['Close'] > m_latest['SSF_200']
@@ -251,14 +256,19 @@ for stock in stocks:
         weekly_df['RSI_MA'] = weekly_df['RSI'].rolling(14).mean()
 
         rsi_w_latest = weekly_df.iloc[-1]
+        w_latest = weekly_df.iloc[-1]
 
         weekly_cross = rolling_cross(w_close, w_ssf50, lookback=6)
         weekly_setup = rolling_setup_weekly(weekly_df, lookback=20)
 
-        if weekly_setup and weekly_cross and rsi_w_latest['RSI'] > rsi_w_latest['RSI_MA']:
+        if (
+            weekly_setup
+            and weekly_cross
+            and rsi_w_latest['RSI'] > rsi_w_latest['RSI_MA']
+            and w_latest['SSF_50'] < w_latest['SSF_200']
+            and w_latest['SSF_50'] < w_latest['SSF_250']
+        ):
             weekly_buy.append(stock)
-
-        w_latest = weekly_df.iloc[-1]
 
         weekly_structure_ok = w_latest['Close'] > w_latest['SSF_200']
 
