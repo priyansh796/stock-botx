@@ -1,4 +1,4 @@
-name: Run Stock Bot
+name: Run Stock Bot v2
 
 on:
   schedule:
