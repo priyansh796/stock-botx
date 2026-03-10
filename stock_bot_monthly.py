@@ -217,7 +217,7 @@ for stock in stocks:
         rsi_m_latest = monthly_df.iloc[-1]
 
         monthly_cross = rolling_cross(m_close, ssf50, lookback=3)
-        monthly_setup = rolling_setup_monthly(monthly_df, lookback=3)
+        monthly_setup = rolling_setup_monthly(monthly_df, lookback=12)
 
         if monthly_setup and monthly_cross and rsi_m_latest['RSI'] > rsi_m_latest['RSI_MA']:
             monthly_buy.append(stock)
@@ -253,7 +253,7 @@ for stock in stocks:
         rsi_w_latest = weekly_df.iloc[-1]
 
         weekly_cross = rolling_cross(w_close, w_ssf50, lookback=6)
-        weekly_setup = rolling_setup_weekly(weekly_df, lookback=6)
+        weekly_setup = rolling_setup_weekly(weekly_df, lookback=20)
 
         if weekly_setup and weekly_cross and rsi_w_latest['RSI'] > rsi_w_latest['RSI_MA']:
             weekly_buy.append(stock)
@@ -322,11 +322,22 @@ message = f"""
 Stock Bot Run Completed
 
 Fundamentals Passed: {len(fundamental_pass)}
+{', '.join(fundamental_pass)}
+
 Weekly Buy: {len(weekly_buy)}
+{', '.join(weekly_buy)}
+
 Monthly Buy: {len(monthly_buy)}
+{', '.join(monthly_buy)}
+
 SSF Monthly: {len(ssf_special)}
+{', '.join(ssf_special)}
+
 SSF Weekly: {len(weekly_ssf_special)}
+{', '.join(weekly_ssf_special)}
+
 Sell Signals: {len(sell_signals)}
+{', '.join(sell_signals)}
 
 Google Sheet Updated Successfully
 """
@@ -334,6 +345,7 @@ Google Sheet Updated Successfully
 send_telegram_message(message)
 
 print("Telegram notification sent.")
+
 
 
 
