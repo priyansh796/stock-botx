@@ -162,11 +162,11 @@ for stock in stocks:
             continue
 
         dividend_yield = info.get("dividendYield")
-        if dividend_yield is None or dividend_yield <= 0:
+        if dividend_yield is not None and dividend_yield <= 0:
             continue
 
         roe = info.get("returnOnEquity")
-        if roe is None or roe < 0.10:
+        if roe is not None and roe < 0.10:
             continue
 
         debt_equity = info.get("debtToEquity")
@@ -178,19 +178,19 @@ for stock in stocks:
             continue
 
         peg_ratio = info.get("pegRatio")
-        if peg_ratio is None or peg_ratio < 1:
+        if peg_ratio is not None and peg_ratio < 1:
             continue
 
         operating_cashflow = info.get("operatingCashflow")
-        if operating_cashflow is None or operating_cashflow <= 0:
+        if operating_cashflow is not None and operating_cashflow <= 0:
             continue
 
         free_cashflow = info.get("freeCashflow")
-        if free_cashflow is None or free_cashflow <= 0:
+        if free_cashflow is not None and free_cashflow <= 0:
             continue
 
         profit_margin = info.get("profitMargins")
-        if profit_margin is None or profit_margin <= 0:
+        if profit_margin is not None and profit_margin <= 0:
             continue
 
         fundamental_pass.append(stock)
@@ -334,6 +334,7 @@ Google Sheet Updated Successfully
 send_telegram_message(message)
 
 print("Telegram notification sent.")
+
 
 
 
