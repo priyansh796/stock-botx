@@ -1,4 +1,3 @@
-```python
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -318,6 +317,7 @@ send_telegram_message(message)
 
 print("Telegram notification sent.")
 ```
+
 
 
 
