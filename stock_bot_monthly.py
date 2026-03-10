@@ -1,3 +1,4 @@
+```python
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -5,6 +6,8 @@ from ta.momentum import RSIIndicator
 import os
 import gspread
 from google.oauth2.service_account import Credentials
+import requests
+from datetime import datetime
 
 MARKET_CAP_LIMIT = 5000 * 10**7
 MONTHLY_HISTORY = "15y"
@@ -12,6 +15,9 @@ WEEKLY_HISTORY = "5y"
 PORTFOLIO_FILE = "portfolio.xlsx"
 
 SPREADSHEET_NAME = "Stock Bot Dashboard"
+
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
 
 
 def super_smoother(price, period):
@@ -72,6 +78,19 @@ def rolling_setup_weekly(df, lookback):
     return False
 
 
+def send_telegram_message(message):
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    requests.post(
+        url,
+        data={
+            "chat_id": CHAT_ID,
+            "text": message
+        }
+    )
+
+
 creds = Credentials.from_service_account_file(
     "credentials.json",
     scopes=[
@@ -97,6 +116,15 @@ def update_sheet(sheet_name, data):
         sheet.update([["No Stocks"]])
     else:
         sheet.update([["Stock"]] + [[x] for x in data])
+
+
+def update_timestamp():
+
+    sheet = spreadsheet.sheet1
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    sheet.update_acell("H1", "Last Bot Run")
+    sheet.update_acell("H2", now)
 
 
 stocks_df = pd.read_csv("nse_stocks.csv")
@@ -268,4 +296,27 @@ update_sheet("SSF_Special_M", ssf_special)
 update_sheet("SSF_Special_W", weekly_ssf_special)
 update_sheet("Sell_Signals", sell_signals)
 
+update_timestamp()
+
 print("\nExcel & Google Sheets updated successfully.")
+
+
+message = f"""
+Stock Bot Run Completed
+
+Fundamentals Passed: {len(fundamental_pass)}
+Weekly Buy: {len(weekly_buy)}
+Monthly Buy: {len(monthly_buy)}
+SSF Monthly: {len(ssf_special)}
+SSF Weekly: {len(weekly_ssf_special)}
+Sell Signals: {len(sell_signals)}
+
+Google Sheet Updated Successfully
+"""
+
+send_telegram_message(message)
+
+print("Telegram notification sent.")
+```
+
+
