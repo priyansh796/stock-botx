@@ -178,7 +178,7 @@ for stock in stocks:
             continue
 
         peg_ratio = info.get("pegRatio")
-        if peg_ratio is not None and peg_ratio < 1:
+        if peg_ratio is not None and peg_ratio > 2:
             continue
 
         operating_cashflow = info.get("operatingCashflow")
