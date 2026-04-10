@@ -161,24 +161,12 @@ for stock in stocks:
         if eps is None or eps <= 0:
             continue
 
-        dividend_yield = info.get("dividendYield")
-        if dividend_yield is not None and dividend_yield <= 0:
-            continue
-
         roe = info.get("returnOnEquity")
         if roe is not None and roe < 0.10:
             continue
 
         debt_equity = info.get("debtToEquity")
         if debt_equity is not None and debt_equity > 3:
-            continue
-
-        current_ratio = info.get("currentRatio")
-        if current_ratio is not None and current_ratio < 1.5:
-            continue
-
-        peg_ratio = info.get("pegRatio")
-        if peg_ratio is not None and peg_ratio > 2:
             continue
 
         operating_cashflow = info.get("operatingCashflow")
