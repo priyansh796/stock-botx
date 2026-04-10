@@ -157,22 +157,6 @@ for stock in stocks:
         if market_cap is None or market_cap < MARKET_CAP_LIMIT:
             continue
 
-        eps = info.get("trailingEps")
-        if eps is None or eps <= 0:
-            continue
-
-        roe = info.get("returnOnEquity")
-        if roe is not None and roe < 0.10:
-            continue
-
-        debt_equity = info.get("debtToEquity")
-        if debt_equity is not None and debt_equity > 3:
-            continue
-
-        profit_margin = info.get("profitMargins")
-        if profit_margin is not None and profit_margin <= 0:
-            continue
-
         fundamental_pass.append(stock)
 
         monthly_df = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
