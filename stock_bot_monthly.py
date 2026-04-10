@@ -169,14 +169,6 @@ for stock in stocks:
         if debt_equity is not None and debt_equity > 3:
             continue
 
-        operating_cashflow = info.get("operatingCashflow")
-        if operating_cashflow is not None and operating_cashflow <= 0:
-            continue
-
-        free_cashflow = info.get("freeCashflow")
-        if free_cashflow is not None and free_cashflow <= 0:
-            continue
-
         profit_margin = info.get("profitMargins")
         if profit_margin is not None and profit_margin <= 0:
             continue
