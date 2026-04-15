@@ -139,6 +139,7 @@ stocks = [symbol + ".NS" for symbol in symbols]
 weekly_buy = []
 monthly_buy = []
 sell_signals = []
+weekly_sell_signals = []
 ssf_special = []
 weekly_ssf_special = []
 fundamental_pass = []
@@ -155,6 +156,11 @@ for stock in stocks:
 
         market_cap = info.get("marketCap")
         if market_cap is None or market_cap < MARKET_CAP_LIMIT:
+            continue
+
+        # NEW FUNDAMENTAL FILTER
+        profit_margin = info.get("profitMargins")
+        if profit_margin is not None and profit_margin <= 0:
             continue
 
         fundamental_pass.append(stock)
@@ -232,12 +238,19 @@ for stock in stocks:
             and w_latest['SSF_50'] < w_latest['SSF_200']
             and w_latest['SSF_50'] < w_latest['SSF_250']
         ):
-            weekly_buy.append(stock)
+            score = rsi_w_latest['RSI'] + ((w_latest['Close'] - w_latest['SSF_50']) / w_latest['SSF_50']) * 100
+            stop_loss = w_latest['SSF_50']
+            weekly_buy.append((stock, score, stop_loss))
 
         weekly_structure_ok = w_latest['Close'] > w_latest['SSF_200']
 
         if weekly_cross and weekly_structure_ok and rsi_w_latest['RSI'] > rsi_w_latest['RSI_MA']:
             weekly_ssf_special.append(stock)
+
+        # WEEKLY SELL (NEW)
+        rsi_w_prev = weekly_df.iloc[-2]
+        if rsi_w_prev['RSI'] > rsi_w_prev['RSI_MA'] and rsi_w_latest['RSI'] < rsi_w_latest['RSI_MA']:
+            weekly_sell_signals.append(stock)
 
         rsi_prev = monthly_df.iloc[-2]
         rsi_latest = monthly_df.iloc[-1]
@@ -251,20 +264,22 @@ for stock in stocks:
         continue
 
 
+# SORT + TOP 5
+weekly_buy = sorted(weekly_buy, key=lambda x: x[1], reverse=True)
+top_weekly_buy = weekly_buy[:5]
+
+
 print("\n===== FUNDAMENTALS PASSED =====")
 print(fundamental_pass)
 
-print("\n===== WEEKLY BUY =====")
-print(weekly_buy)
+print("\n===== TOP WEEKLY BUY =====")
+print(top_weekly_buy)
 
 print("\n===== MONTHLY BUY =====")
 print(monthly_buy)
 
-print("\n===== SSF SPECIAL (MONTHLY) =====")
-print(ssf_special)
-
-print("\n===== SSF SPECIAL (WEEKLY) =====")
-print(weekly_ssf_special)
+print("\n===== WEEKLY SELL =====")
+print(weekly_sell_signals)
 
 print("\n===== SELL SIGNALS =====")
 print(sell_signals)
@@ -273,18 +288,16 @@ print(sell_signals)
 with pd.ExcelWriter(PORTFOLIO_FILE, engine="openpyxl", mode="w") as writer:
 
     pd.DataFrame(fundamental_pass, columns=["Stock"]).to_excel(writer, sheet_name="Fundamentals", index=False)
-    pd.DataFrame(weekly_buy, columns=["Stock"]).to_excel(writer, sheet_name="Weekly_Buy", index=False)
+    pd.DataFrame(top_weekly_buy, columns=["Stock","Score","StopLoss"]).to_excel(writer, sheet_name="Weekly_Buy", index=False)
     pd.DataFrame(monthly_buy, columns=["Stock"]).to_excel(writer, sheet_name="Monthly_Buy", index=False)
-    pd.DataFrame(ssf_special, columns=["Stock"]).to_excel(writer, sheet_name="SSF_Special_M", index=False)
-    pd.DataFrame(weekly_ssf_special, columns=["Stock"]).to_excel(writer, sheet_name="SSF_Special_W", index=False)
+    pd.DataFrame(weekly_sell_signals, columns=["Stock"]).to_excel(writer, sheet_name="Weekly_Sell", index=False)
     pd.DataFrame(sell_signals, columns=["Stock"]).to_excel(writer, sheet_name="Sell_Signals", index=False)
 
 
 update_sheet("Fundamentals", fundamental_pass)
-update_sheet("Weekly_Buy", weekly_buy)
+update_sheet("Weekly_Buy", [x[0] for x in top_weekly_buy])
 update_sheet("Monthly_Buy", monthly_buy)
-update_sheet("SSF_Special_M", ssf_special)
-update_sheet("SSF_Special_W", weekly_ssf_special)
+update_sheet("Weekly_Sell", weekly_sell_signals)
 update_sheet("Sell_Signals", sell_signals)
 
 update_timestamp()
@@ -295,25 +308,17 @@ print("\nExcel & Google Sheets updated successfully.")
 message = f"""
 Stock Bot Run Completed
 
-Fundamentals Passed: {len(fundamental_pass)}
-{', '.join(fundamental_pass)}
+Top Weekly Buy:
+{top_weekly_buy}
 
-Weekly Buy: {len(weekly_buy)}
-{', '.join(weekly_buy)}
+Weekly Sell:
+{', '.join(weekly_sell_signals)}
 
-Monthly Buy: {len(monthly_buy)}
+Monthly Buy:
 {', '.join(monthly_buy)}
 
-SSF Monthly: {len(ssf_special)}
-{', '.join(ssf_special)}
-
-SSF Weekly: {len(weekly_ssf_special)}
-{', '.join(weekly_ssf_special)}
-
-Sell Signals: {len(sell_signals)}
+Sell Signals:
 {', '.join(sell_signals)}
-
-Google Sheet Updated Successfully
 """
 
 send_telegram_message(message)
