@@ -230,15 +230,15 @@ for stock in stocks:
             stop_loss = w_latest['SSF_50']
             weekly_buy_scored.append((stock, score, stop_loss))
 
-        # ✅ UPDATED WEEKLY SELL LOGIC (STRICT AS PER YOUR REQUIREMENT)
+        # ✅ FIXED WEEKLY SELL LOGIC (ONLY CHANGE)
 
         close = weekly_df['Close']
         ssf20 = weekly_df['SSF_20']
 
-        prev_above = False
-        for i in range(4, len(close)):  # older data check
-            if close.iloc[i] > ssf20.iloc[i]:
-                prev_above = True
+        recent_above = False
+        for i in range(6, 10):
+            if close.iloc[-i] > ssf20.iloc[-i]:
+                recent_above = True
                 break
 
         recent_cross = False
@@ -252,7 +252,7 @@ for stock in stocks:
             and close.iloc[-1] < close.iloc[-2]
         )
 
-        if prev_above and recent_cross and downtrend:
+        if recent_above and recent_cross and downtrend:
             weekly_sell_signals.append(stock)
 
         rsi_prev = monthly_df.iloc[-2]
