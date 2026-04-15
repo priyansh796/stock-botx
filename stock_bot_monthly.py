@@ -55,6 +55,15 @@ def rolling_cross(close, ssf, lookback):
     return False
 
 
+def rolling_cross_down(close, ssf, lookback):
+
+    for i in range(1, lookback):
+        if close[-i - 1] > ssf[-i - 1] and close[-i] < ssf[-i]:
+            return True
+
+    return False
+
+
 def rolling_setup_monthly(df, lookback):
 
     for i in range(1, lookback):
@@ -203,6 +212,7 @@ for stock in stocks:
 
         w_close = weekly_df['Close'].values
 
+        weekly_df['SSF_20'] = super_smoother(w_close, 20)
         weekly_df['SSF_50'] = super_smoother(w_close, 50)
         weekly_df['SSF_100'] = super_smoother(w_close, 100)
         weekly_df['SSF_200'] = super_smoother(w_close, 200)
@@ -229,8 +239,8 @@ for stock in stocks:
             stop_loss = w_latest['SSF_50']
             weekly_buy_scored.append((stock, score, stop_loss))
 
-        rsi_w_prev = weekly_df.iloc[-2]
-        if rsi_w_prev['RSI'] > rsi_w_prev['RSI_MA'] and rsi_w_latest['RSI'] < rsi_w_latest['RSI_MA']:
+        # ✅ NEW WEEKLY SELL USING SSF20
+        if rolling_cross_down(w_close, weekly_df['SSF_20'].values, lookback=3) and w_latest['Close'] < w_latest['SSF_20']:
             weekly_sell_signals.append(stock)
 
         rsi_prev = monthly_df.iloc[-2]
