@@ -20,7 +20,6 @@ CHAT_ID = "8258280498"
 
 
 def super_smoother(price, period):
-
     a1 = np.exp(-1.414 * np.pi / period)
     b1 = 2 * a1 * np.cos(1.414 * np.pi / period)
     c2 = b1
@@ -40,7 +39,6 @@ def super_smoother(price, period):
 
 
 def rolling_cross(close, ssf, lookback):
-
     cross_found = False
 
     for i in range(1, lookback):
@@ -55,7 +53,6 @@ def rolling_cross(close, ssf, lookback):
 
 
 def rolling_setup_monthly(df, lookback):
-
     for i in range(1, lookback):
         if (
             df['Close'].iloc[-i] < df['SSF_50'].iloc[-i]
@@ -63,12 +60,10 @@ def rolling_setup_monthly(df, lookback):
             and df['Close'].iloc[-i] < df['SSF_250'].iloc[-i]
         ):
             return True
-
     return False
 
 
 def rolling_setup_weekly(df, lookback):
-
     for i in range(1, lookback):
         if (
             df['Close'].iloc[-i] < df['SSF_50'].iloc[-i]
@@ -76,14 +71,11 @@ def rolling_setup_weekly(df, lookback):
             and df['Close'].iloc[-i] < df['SSF_250'].iloc[-i]
         ):
             return True
-
     return False
 
 
 def send_telegram_message(message):
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
     requests.post(url, data={"chat_id": CHAT_ID, "text": message})
 
 
@@ -100,7 +92,6 @@ spreadsheet = client.open(SPREADSHEET_NAME)
 
 
 def update_sheet(sheet_name, data):
-
     try:
         sheet = spreadsheet.worksheet(sheet_name)
     except:
@@ -115,10 +106,8 @@ def update_sheet(sheet_name, data):
 
 
 def update_timestamp():
-
     sheet = spreadsheet.sheet1
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     sheet.update_acell("H1", "Last Bot Run")
     sheet.update_acell("H2", now)
 
@@ -139,23 +128,11 @@ for stock in stocks:
     print(f"Processing {stock} ...")
 
     try:
-
         ticker = yf.Ticker(stock)
-        info = ticker.info
 
-        market_cap = info.get("marketCap")
-        if market_cap is None or market_cap < MARKET_CAP_LIMIT:
-            continue
+        # ================= TECHNICAL FIRST =================
 
-        profit_margin = info.get("profitMargins")
-        if profit_margin is not None and profit_margin <= 0:
-            continue
-
-        fundamental_pass.append(stock)
-
-        # ---------- MONTHLY ----------
         monthly_df = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
-
         if len(monthly_df) < 80:
             continue
 
@@ -177,19 +154,7 @@ for stock in stocks:
         monthly_cross = rolling_cross(m_close, monthly_df['SSF_50'].values, 3)
         monthly_setup = rolling_setup_monthly(monthly_df, 12)
 
-        if (
-            monthly_setup
-            and monthly_cross
-            and rsi_m_latest['RSI'] > rsi_m_latest['RSI_MA']
-            and m_latest['SSF_50'] < m_latest['SSF_200']
-            and m_latest['SSF_50'] < m_latest['SSF_250']
-        ):
-            score = rsi_m_latest['RSI'] + ((m_latest['Close'] - m_latest['SSF_50']) / m_latest['SSF_50']) * 100
-            monthly_buy_scored.append((stock, score))
-
-        # ---------- WEEKLY ----------
         weekly_df = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
-
         if len(weekly_df) < 30:
             continue
 
@@ -211,6 +176,35 @@ for stock in stocks:
         weekly_cross = rolling_cross(w_close, weekly_df['SSF_50'].values, 6)
         weekly_setup = rolling_setup_weekly(weekly_df, 20)
 
+        # If no technical signal → skip fundamentals
+        if not (monthly_cross or weekly_cross):
+            continue
+
+        # ================= FUNDAMENTALS NOW =================
+        info = ticker.info
+
+        market_cap = info.get("marketCap")
+        if market_cap is None or market_cap < MARKET_CAP_LIMIT:
+            continue
+
+        profit_margin = info.get("profitMargins")
+        if profit_margin is not None and profit_margin <= 0:
+            continue
+
+        fundamental_pass.append(stock)
+
+        # ================= APPLY FINAL LOGIC =================
+
+        if (
+            monthly_setup
+            and monthly_cross
+            and rsi_m_latest['RSI'] > rsi_m_latest['RSI_MA']
+            and m_latest['SSF_50'] < m_latest['SSF_200']
+            and m_latest['SSF_50'] < m_latest['SSF_250']
+        ):
+            score = rsi_m_latest['RSI'] + ((m_latest['Close'] - m_latest['SSF_50']) / m_latest['SSF_50']) * 100
+            monthly_buy_scored.append((stock, score))
+
         if (
             weekly_setup
             and weekly_cross
@@ -221,7 +215,7 @@ for stock in stocks:
             score = rsi_w_latest['RSI'] + ((w_latest['Close'] - w_latest['SSF_50']) / w_latest['SSF_50']) * 100
             weekly_buy_scored.append((stock, score))
 
-        # ---------- WEEKLY SELL ----------
+        # WEEKLY SELL
         close = weekly_df['Close']
         ssf20 = weekly_df['SSF_20']
 
@@ -237,7 +231,7 @@ for stock in stocks:
         if recent_above and recent_cross and downtrend:
             weekly_sell_signals.append(stock)
 
-        # ---------- MONTHLY SELL ----------
+        # MONTHLY SELL
         rsi_prev = monthly_df.iloc[-2]
         if rsi_prev['RSI'] > rsi_prev['RSI_MA'] and rsi_m_latest['RSI'] < rsi_m_latest['RSI_MA']:
             sell_signals.append(stock)
