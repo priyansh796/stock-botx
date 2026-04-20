@@ -8,7 +8,7 @@ from google.oauth2.service_account import Credentials
 import requests
 from datetime import datetime
 
-MARKET_CAP_LIMIT = 5000 * 10**7
+MARKET_CAP_LIMIT = 10000 * 10**7
 MONTHLY_HISTORY = "15y"
 WEEKLY_HISTORY = "5y"
 PORTFOLIO_FILE = "portfolio.xlsx"
