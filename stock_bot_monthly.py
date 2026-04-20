@@ -130,7 +130,7 @@ for stock in stocks:
     try:
         ticker = yf.Ticker(stock)
 
-        # ================= TECHNICAL FIRST =================
+        # ================= TECHNICAL =================
 
         monthly_df = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
         if len(monthly_df) < 80:
@@ -176,11 +176,7 @@ for stock in stocks:
         weekly_cross = rolling_cross(w_close, weekly_df['SSF_50'].values, 6)
         weekly_setup = rolling_setup_weekly(weekly_df, 20)
 
-        # If no technical signal → skip fundamentals
-        if not (monthly_cross or weekly_cross):
-            continue
-
-        # ================= FUNDAMENTALS NOW =================
+        # ================= FUNDAMENTALS =================
         info = ticker.info
 
         market_cap = info.get("marketCap")
@@ -193,7 +189,7 @@ for stock in stocks:
 
         fundamental_pass.append(stock)
 
-        # ================= APPLY FINAL LOGIC =================
+        # ================= FINAL LOGIC =================
 
         if (
             monthly_setup
