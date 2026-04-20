@@ -45,7 +45,6 @@ def rolling_cross(close, ssf, lookback):
     cross_found = False
 
     for i in range(1, lookback):
-
         if close[-i - 1] < ssf[-i - 1] and close[-i] > ssf[-i]:
             cross_found = True
             break
@@ -59,7 +58,6 @@ def rolling_cross(close, ssf, lookback):
 def rolling_setup_monthly(df, lookback):
 
     for i in range(1, lookback):
-
         if (
             df['Close'].iloc[-i] < df['SSF_50'].iloc[-i]
             and df['Close'].iloc[-i] < df['SSF_200'].iloc[-i]
@@ -73,7 +71,6 @@ def rolling_setup_monthly(df, lookback):
 def rolling_setup_weekly(df, lookback):
 
     for i in range(1, lookback):
-
         if (
             df['Close'].iloc[-i] < df['SSF_50'].iloc[-i]
             and df['Close'].iloc[-i] < df['SSF_100'].iloc[-i]
@@ -192,7 +189,7 @@ for stock in stocks:
 
         m_close = monthly_df['Close'].values
 
-        monthly_df['SSF_20'] = super_smoother(m_close, 20)  # added for sell
+        monthly_df['SSF_20'] = super_smoother(m_close, 20)
         monthly_df['SSF_50'] = super_smoother(m_close, 50)
         monthly_df['SSF_100'] = super_smoother(m_close, 100)
         monthly_df['SSF_150'] = super_smoother(m_close, 150)
@@ -242,23 +239,25 @@ for stock in stocks:
             stop_loss = m_latest['SSF_50']
             monthly_buy_scored.append((stock, score, stop_loss))
 
-        # ✅ WEEKLY SELL (FINAL LOGIC)
+        # ✅ WEEKLY SELL (FINAL UPDATED)
         close = weekly_df['Close']
         ssf20 = weekly_df['SSF_20']
 
-        for i in range(1, 4):
-            if close.iloc[-i - 1] > ssf20.iloc[-i - 1] and close.iloc[-i] < ssf20.iloc[-i]:
-                weekly_sell_signals.append(stock)
-                break
+        if (
+            close.iloc[-2] > ssf20.iloc[-2] and
+            close.iloc[-1] < ssf20.iloc[-1]
+        ):
+            weekly_sell_signals.append(stock)
 
-        # ✅ MONTHLY SELL (FINAL LOGIC)
+        # ✅ MONTHLY SELL (FINAL UPDATED)
         m_close_series = monthly_df['Close']
         m_ssf20 = monthly_df['SSF_20']
 
-        for i in range(1, 4):
-            if m_close_series.iloc[-i - 1] > m_ssf20.iloc[-i - 1] and m_close_series.iloc[-i] < m_ssf20.iloc[-i]:
-                sell_signals.append(stock)
-                break
+        if (
+            m_close_series.iloc[-2] > m_ssf20.iloc[-2] and
+            m_close_series.iloc[-1] < m_ssf20.iloc[-1]
+        ):
+            sell_signals.append(stock)
 
     except Exception as e:
         print("Error:", stock, e)
