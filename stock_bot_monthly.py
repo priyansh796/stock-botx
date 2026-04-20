@@ -31,12 +31,14 @@ def debug_stock(stock):
     print("="*60)
 
     ticker = yf.Ticker(stock)
-    df = ticker.history(period="5y", interval="1wk")
+
+    # ✅ FIX APPLIED HERE
+    df = ticker.history(period="max", interval="1wk")
 
     print(f"Data Length: {len(df)}")
 
     if len(df) < 300:
-        print("❌ NOT ENOUGH DATA FOR SSF250")
+        print("❌ STILL NOT ENOUGH DATA (unexpected)")
         return
 
     close = df['Close'].values
