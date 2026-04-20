@@ -8,7 +8,7 @@ from google.oauth2.service_account import Credentials
 import requests
 from datetime import datetime
 
-MARKET_CAP_LIMIT = 5000 * 10**7
+MARKET_CAP_LIMIT = 25000 * 10**7
 MONTHLY_HISTORY = "15y"
 WEEKLY_HISTORY = "5y"
 PORTFOLIO_FILE = "portfolio.xlsx"
@@ -203,7 +203,6 @@ for stock in stocks:
 
         w_close = weekly_df['Close'].values
 
-        weekly_df['SSF_20'] = super_smoother(w_close, 20)
         weekly_df['SSF_50'] = super_smoother(w_close, 50)
         weekly_df['SSF_100'] = super_smoother(w_close, 100)
         weekly_df['SSF_200'] = super_smoother(w_close, 200)
@@ -230,29 +229,8 @@ for stock in stocks:
             stop_loss = w_latest['SSF_50']
             weekly_buy_scored.append((stock, score, stop_loss))
 
-        # ✅ UPDATED WEEKLY SELL LOGIC (STRICT AS PER YOUR REQUIREMENT)
-
-        close = weekly_df['Close']
-        ssf20 = weekly_df['SSF_20']
-
-        prev_above = False
-        for i in range(4, len(close)):  # older data check
-            if close.iloc[i] > ssf20.iloc[i]:
-                prev_above = True
-                break
-
-        recent_cross = False
-        for i in range(1, 4):
-            if close.iloc[-i - 1] > ssf20.iloc[-i - 1] and close.iloc[-i] < ssf20.iloc[-i]:
-                recent_cross = True
-                break
-
-        downtrend = (
-            close.iloc[-1] < ssf20.iloc[-1]
-            and close.iloc[-1] < close.iloc[-2]
-        )
-
-        if prev_above and recent_cross and downtrend:
+        rsi_w_prev = weekly_df.iloc[-2]
+        if rsi_w_prev['RSI'] > rsi_w_prev['RSI_MA'] and rsi_w_latest['RSI'] < rsi_w_latest['RSI_MA']:
             weekly_sell_signals.append(stock)
 
         rsi_prev = monthly_df.iloc[-2]
