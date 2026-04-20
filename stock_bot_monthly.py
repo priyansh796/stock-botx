@@ -10,7 +10,7 @@ from datetime import datetime
 
 MARKET_CAP_LIMIT = 5000 * 10**7
 MONTHLY_HISTORY = "15y"
-WEEKLY_HISTORY = "max"   # ✅ FIXED
+WEEKLY_HISTORY = "max"
 
 PORTFOLIO_FILE = "portfolio.xlsx"
 
@@ -152,10 +152,8 @@ for stock in stocks:
 
         ticker = yf.Ticker(stock)
 
-        # ---------------- WEEKLY FIRST (TECHNICAL FIRST) ----------------
-
         weekly_df = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
-        weekly_df = weekly_df.iloc[:-1]   # ✅ FIX
+        weekly_df = weekly_df.iloc[:-1]
 
         if len(weekly_df) < 300:
             continue
@@ -186,16 +184,15 @@ for stock in stocks:
             and w_latest['SSF_50'] < w_latest['SSF_250']
         )
 
-        # ---------------- MONTHLY TECHNICAL ----------------
-
         monthly_df = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
-        monthly_df = monthly_df.iloc[:-1]   # ✅ FIX
+        monthly_df = monthly_df.iloc[:-1]
 
         if len(monthly_df) < 80:
             continue
 
         m_close = monthly_df['Close'].values
 
+        monthly_df['SSF_20'] = super_smoother(m_close, 20)  # added for sell
         monthly_df['SSF_50'] = super_smoother(m_close, 50)
         monthly_df['SSF_100'] = super_smoother(m_close, 100)
         monthly_df['SSF_150'] = super_smoother(m_close, 150)
@@ -220,12 +217,8 @@ for stock in stocks:
             and m_latest['SSF_50'] < m_latest['SSF_250']
         )
 
-        # ---------------- IF NOTHING PASSES → SKIP FUNDAMENTALS ----------------
-
         if not (weekly_pass or monthly_pass):
             continue
-
-        # ---------------- FUNDAMENTALS AFTER TECHNICAL ----------------
 
         info = ticker.info
 
@@ -239,8 +232,6 @@ for stock in stocks:
 
         fundamental_pass.append(stock)
 
-        # ---------------- ADD SCORES ----------------
-
         if weekly_pass:
             score = rsi_w_latest['RSI'] + ((w_latest['Close'] - w_latest['SSF_50']) / w_latest['SSF_50']) * 100
             stop_loss = w_latest['SSF_50']
@@ -251,30 +242,23 @@ for stock in stocks:
             stop_loss = m_latest['SSF_50']
             monthly_buy_scored.append((stock, score, stop_loss))
 
-        # ---------------- WEEKLY SELL ----------------
-
+        # ✅ WEEKLY SELL (FINAL LOGIC)
         close = weekly_df['Close']
         ssf20 = weekly_df['SSF_20']
 
-        recent_above = any(close.iloc[-i] > ssf20.iloc[-i] for i in range(6, 10))
-        recent_cross = any(
-            close.iloc[-i - 1] > ssf20.iloc[-i - 1] and close.iloc[-i] < ssf20.iloc[-i]
-            for i in range(1, 4)
-        )
+        for i in range(1, 4):
+            if close.iloc[-i - 1] > ssf20.iloc[-i - 1] and close.iloc[-i] < ssf20.iloc[-i]:
+                weekly_sell_signals.append(stock)
+                break
 
-        downtrend = (
-            close.iloc[-1] < ssf20.iloc[-1]
-            and close.iloc[-1] < close.iloc[-2]
-        )
+        # ✅ MONTHLY SELL (FINAL LOGIC)
+        m_close_series = monthly_df['Close']
+        m_ssf20 = monthly_df['SSF_20']
 
-        if recent_above and recent_cross and downtrend:
-            weekly_sell_signals.append(stock)
-
-        # ---------------- MONTHLY SELL ----------------
-
-        rsi_prev = monthly_df.iloc[-2]
-        if rsi_prev['RSI'] > rsi_prev['RSI_MA'] and rsi_m_latest['RSI'] < rsi_m_latest['RSI_MA']:
-            sell_signals.append(stock)
+        for i in range(1, 4):
+            if m_close_series.iloc[-i - 1] > m_ssf20.iloc[-i - 1] and m_close_series.iloc[-i] < m_ssf20.iloc[-i]:
+                sell_signals.append(stock)
+                break
 
     except Exception as e:
         print("Error:", stock, e)
