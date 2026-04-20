@@ -32,13 +32,18 @@ def debug_stock(stock):
 
     ticker = yf.Ticker(stock)
 
-    # ✅ FIX APPLIED HERE
+    # ✅ FULL HISTORY
     df = ticker.history(period="max", interval="1wk")
 
-    print(f"Data Length: {len(df)}")
+    print(f"Raw Data Length: {len(df)}")
+
+    # ✅ REMOVE INCOMPLETE LAST CANDLE
+    df = df.iloc[:-1]
+
+    print(f"Usable Data Length: {len(df)}")
 
     if len(df) < 300:
-        print("❌ STILL NOT ENOUGH DATA (unexpected)")
+        print("❌ NOT ENOUGH DATA")
         return
 
     close = df['Close'].values
@@ -59,6 +64,7 @@ def debug_stock(stock):
     print("\n🔁 CROSS CHECK (Last 6 weeks):")
 
     cross = False
+
     for i in range(1, 6):
 
         prev_close = close[-i - 1]
