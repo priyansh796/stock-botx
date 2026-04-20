@@ -44,7 +44,6 @@ def rolling_cross(close, ssf, lookback):
     cross_found = False
 
     for i in range(1, lookback):
-
         if close[-i - 1] < ssf[-i - 1] and close[-i] > ssf[-i]:
             cross_found = True
             break
@@ -58,7 +57,6 @@ def rolling_cross(close, ssf, lookback):
 def rolling_setup_monthly(df, lookback):
 
     for i in range(1, lookback):
-
         if (
             df['Close'].iloc[-i] < df['SSF_50'].iloc[-i]
             and df['Close'].iloc[-i] < df['SSF_200'].iloc[-i]
@@ -72,7 +70,6 @@ def rolling_setup_monthly(df, lookback):
 def rolling_setup_weekly(df, lookback):
 
     for i in range(1, lookback):
-
         if (
             df['Close'].iloc[-i] < df['SSF_50'].iloc[-i]
             and df['Close'].iloc[-i] < df['SSF_100'].iloc[-i]
@@ -87,13 +84,7 @@ def send_telegram_message(message):
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": message
-        }
-    )
+    requests.post(url, data={"chat_id": CHAT_ID, "text": message})
 
 
 creds = Credentials.from_service_account_file(
@@ -162,6 +153,7 @@ for stock in stocks:
 
         fundamental_pass.append(stock)
 
+        # ---------- MONTHLY ----------
         monthly_df = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
 
         if len(monthly_df) < 80:
@@ -182,8 +174,8 @@ for stock in stocks:
         rsi_m_latest = monthly_df.iloc[-1]
         m_latest = monthly_df.iloc[-1]
 
-        monthly_cross = rolling_cross(m_close, monthly_df['SSF_50'].values, lookback=3)
-        monthly_setup = rolling_setup_monthly(monthly_df, lookback=12)
+        monthly_cross = rolling_cross(m_close, monthly_df['SSF_50'].values, 3)
+        monthly_setup = rolling_setup_monthly(monthly_df, 12)
 
         if (
             monthly_setup
@@ -193,9 +185,9 @@ for stock in stocks:
             and m_latest['SSF_50'] < m_latest['SSF_250']
         ):
             score = rsi_m_latest['RSI'] + ((m_latest['Close'] - m_latest['SSF_50']) / m_latest['SSF_50']) * 100
-            stop_loss = m_latest['SSF_50']
-            monthly_buy_scored.append((stock, score, stop_loss))
+            monthly_buy_scored.append((stock, score))
 
+        # ---------- WEEKLY ----------
         weekly_df = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
 
         if len(weekly_df) < 30:
@@ -216,8 +208,8 @@ for stock in stocks:
         rsi_w_latest = weekly_df.iloc[-1]
         w_latest = weekly_df.iloc[-1]
 
-        weekly_cross = rolling_cross(w_close, weekly_df['SSF_50'].values, lookback=6)
-        weekly_setup = rolling_setup_weekly(weekly_df, lookback=20)
+        weekly_cross = rolling_cross(w_close, weekly_df['SSF_50'].values, 6)
+        weekly_setup = rolling_setup_weekly(weekly_df, 20)
 
         if (
             weekly_setup
@@ -227,34 +219,25 @@ for stock in stocks:
             and w_latest['SSF_50'] < w_latest['SSF_250']
         ):
             score = rsi_w_latest['RSI'] + ((w_latest['Close'] - w_latest['SSF_50']) / w_latest['SSF_50']) * 100
-            stop_loss = w_latest['SSF_50']
-            weekly_buy_scored.append((stock, score, stop_loss))
+            weekly_buy_scored.append((stock, score))
 
-        # ✅ FIXED WEEKLY SELL LOGIC (ONLY CHANGE)
-
+        # ---------- WEEKLY SELL ----------
         close = weekly_df['Close']
         ssf20 = weekly_df['SSF_20']
 
-        recent_above = False
-        for i in range(6, 10):
-            if close.iloc[-i] > ssf20.iloc[-i]:
-                recent_above = True
-                break
+        recent_above = any(close.iloc[-i] > ssf20.iloc[-i] for i in range(6, 10))
 
-        recent_cross = False
-        for i in range(1, 4):
-            if close.iloc[-i - 1] > ssf20.iloc[-i - 1] and close.iloc[-i] < ssf20.iloc[-i]:
-                recent_cross = True
-                break
-
-        downtrend = (
-            close.iloc[-1] < ssf20.iloc[-1]
-            and close.iloc[-1] < close.iloc[-2]
+        recent_cross = any(
+            close.iloc[-i - 1] > ssf20.iloc[-i - 1] and close.iloc[-i] < ssf20.iloc[-i]
+            for i in range(1, 4)
         )
+
+        downtrend = close.iloc[-1] < ssf20.iloc[-1] and close.iloc[-1] < close.iloc[-2]
 
         if recent_above and recent_cross and downtrend:
             weekly_sell_signals.append(stock)
 
+        # ---------- MONTHLY SELL ----------
         rsi_prev = monthly_df.iloc[-2]
         if rsi_prev['RSI'] > rsi_prev['RSI_MA'] and rsi_m_latest['RSI'] < rsi_m_latest['RSI_MA']:
             sell_signals.append(stock)
@@ -278,11 +261,11 @@ with pd.ExcelWriter(PORTFOLIO_FILE, engine="openpyxl", mode="w") as writer:
 
     pd.DataFrame(fundamental_pass, columns=["Stock"]).to_excel(writer, sheet_name="Fundamentals", index=False)
 
-    pd.DataFrame(top_weekly, columns=["Stock","Score","StopLoss"]).to_excel(writer, sheet_name="Top_Weekly", index=False)
-    pd.DataFrame(rest_weekly, columns=["Stock","Score","StopLoss"]).to_excel(writer, sheet_name="Rest_Weekly", index=False)
+    pd.DataFrame(top_weekly, columns=["Stock","Score"]).to_excel(writer, sheet_name="Top_Weekly", index=False)
+    pd.DataFrame(rest_weekly, columns=["Stock","Score"]).to_excel(writer, sheet_name="Rest_Weekly", index=False)
 
-    pd.DataFrame(top_monthly, columns=["Stock","Score","StopLoss"]).to_excel(writer, sheet_name="Top_Monthly", index=False)
-    pd.DataFrame(rest_monthly, columns=["Stock","Score","StopLoss"]).to_excel(writer, sheet_name="Rest_Monthly", index=False)
+    pd.DataFrame(top_monthly, columns=["Stock","Score"]).to_excel(writer, sheet_name="Top_Monthly", index=False)
+    pd.DataFrame(rest_monthly, columns=["Stock","Score"]).to_excel(writer, sheet_name="Rest_Monthly", index=False)
 
     pd.DataFrame(weekly_sell_signals, columns=["Stock"]).to_excel(writer, sheet_name="Weekly_Sell", index=False)
     pd.DataFrame(sell_signals, columns=["Stock"]).to_excel(writer, sheet_name="Sell_Signals", index=False)
