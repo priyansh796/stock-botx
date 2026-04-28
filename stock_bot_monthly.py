@@ -7,7 +7,6 @@ import gspread
 from google.oauth2.service_account import Credentials
 import requests
 from datetime import datetime
-from scipy.stats import entropy, skew
 
 MARKET_CAP_LIMIT = 5000 * 10**7
 MONTHLY_HISTORY = "15y"
@@ -140,8 +139,6 @@ monthly_buy_scored = []
 weekly_sell_signals = []
 sell_signals = []
 fundamental_pass = []
-quant_buy = []
-quant_sell = []
 
 
 for stock in stocks:
@@ -261,39 +258,7 @@ for stock in stocks:
             m_close_series.iloc[-1] < m_ssf20.iloc[-1]
         ):
             sell_signals.append(stock)
-        # ===== 🔥 NEW QUANT MODEL =====
-        returns = np.log(weekly_df['Close'] / weekly_df['Close'].shift(1)).dropna()
 
-        if len(returns) > 100:
-            vol_ratio = returns.rolling(20).std().iloc[-1] / returns.rolling(100).std().iloc[-1]
-            drift = returns.rolling(20).mean().iloc[-1]
-            skewness = skew(returns[-50:])
-            hist, _ = np.histogram(returns[-50:], bins=10, density=True)
-            ent = entropy(hist + 1e-9)
-
-            high = weekly_df['High'].rolling(10).max().iloc[-1]
-            low = weekly_df['Low'].rolling(10).min().iloc[-1]
-
-            breakout = w_latest['Close'] > weekly_df['High'].rolling(10).max().iloc[-2]
-            breakdown = w_latest['Close'] < weekly_df['Low'].rolling(10).min().iloc[-2]
-
-            if (vol_ratio < 0.7 and drift > 0 and skewness > 0 and ent < 2 and breakout):
-                quant_buy.append(stock)
-
-            if (vol_ratio > 1.5 and drift < 0 and breakdown):
-                quant_sell.append(stock)
-
-    except:
-        continue
-
-
-weekly_buy_scored.sort(key=lambda x: x[1], reverse=True)
-monthly_buy_scored.sort(key=lambda x: x[1], reverse=True)
-
-top_weekly = weekly_buy_scored[:5]
-rest_weekly = weekly_buy_scored[5:]
-top_monthly = monthly_buy_scored[:5]
-rest_monthly = monthly_buy_scored[5:]
     except Exception as e:
         print("Error:", stock, e)
         continue
@@ -321,12 +286,7 @@ with pd.ExcelWriter(PORTFOLIO_FILE, engine="openpyxl", mode="w") as writer:
 
     pd.DataFrame(weekly_sell_signals, columns=["Stock"]).to_excel(writer, sheet_name="Weekly_Sell", index=False)
     pd.DataFrame(sell_signals, columns=["Stock"]).to_excel(writer, sheet_name="Sell_Signals", index=False)
-    pd.DataFrame(quant_buy, columns=["Stock"]).to_excel(writer, sheet_name="Quant_Buy", index=False)
-    pd.DataFrame(quant_sell, columns=["Stock"]).to_excel(writer, sheet_name="Quant_Sell", index=False)
 
-
-update_sheet("Quant_Buy", quant_buy)
-update_sheet("Quant_Sell", quant_sell)
 
 update_sheet("Fundamentals", fundamental_pass)
 update_sheet("Top_Weekly", [x[0] for x in top_weekly])
@@ -359,12 +319,6 @@ Weekly Sell:
 
 Sell Signals:
 {sell_signals}
-
-🔥 Quant Model Buy:
-{quant_buy}
-
-🔥 Quant Model Sell:
-{quant_sell}
 """
 
 send_telegram_message(message)
