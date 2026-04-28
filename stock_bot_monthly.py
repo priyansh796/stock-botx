@@ -108,7 +108,7 @@ def send_telegram_message(message):
             "text": message
         }
     )
-
+print(f"Telegram Response: {response.status_code} - {response.text}")
 
 creds = Credentials.from_service_account_file(
     "credentials.json",
