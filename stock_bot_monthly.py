@@ -53,18 +53,22 @@ def rolling_setup_weekly(df, lookback):
             return True
     return False
 
-# --- PREDICTIVE QUANT ENGINE (COMPLETELY SEPARATE) ---
+# --- PREDICTIVE QUANT ENGINE (NOW WITH RANKING DATA) ---
 def get_predictive_signal(df):
-    if len(df) < 30: return "HOLD"
+    if len(df) < 30: return "HOLD", 0
     bb = BollingerBands(df['Close'], window=20)
     bw = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
     mfv = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / (df['High'] - df['Low'])
     cmf = (mfv.fillna(0) * df['Volume']).rolling(20).sum() / df['Volume'].rolling(20).sum()
-    if bw.iloc[-1] < bw.rolling(20).mean().iloc[-1] and cmf.iloc[-1] > 0.1:
-        return "PREDICT_UP"
-    elif cmf.iloc[-1] < -0.05 and df['Close'].iloc[-1] > df['Close'].rolling(20).mean().iloc[-1]:
-        return "PREDICT_DOWN"
-    return "HOLD"
+    
+    last_cmf = cmf.iloc[-1]
+    
+    # Ranking based on Chaikin Money Flow intensity
+    if bw.iloc[-1] < bw.rolling(20).mean().iloc[-1] and last_cmf > 0.1:
+        return "PREDICT_UP", last_cmf
+    elif last_cmf < -0.05 and df['Close'].iloc[-1] > df['Close'].rolling(20).mean().iloc[-1]:
+        return "PREDICT_DOWN", last_cmf
+    return "HOLD", 0
 
 def send_telegram_message(message):
     try:
@@ -93,7 +97,7 @@ fundamental_pass = []
 weekly_buy_scored, monthly_buy_scored = [], []
 weekly_sell_signals, sell_signals = [], []
 
-# Predictive Data Storage
+# Predictive Data Storage (Now storing tuples for ranking)
 predictive_up, predictive_down = [], []
 
 for stock in stocks:
@@ -111,10 +115,10 @@ for stock in stocks:
             w_df['SSF_200'] = super_smoother(w_close, 200)
             w_df['SSF_250'] = super_smoother(w_close, 250)
             
-            # Predictive Logic
-            p_res = get_predictive_signal(w_df)
-            if p_res == "PREDICT_UP": predictive_up.append(stock)
-            elif p_res == "PREDICT_DOWN": predictive_down.append(stock)
+            # Predictive Logic with Scoring
+            p_res, p_score = get_predictive_signal(w_df)
+            if p_res == "PREDICT_UP": predictive_up.append((stock, p_score))
+            elif p_res == "PREDICT_DOWN": predictive_down.append((stock, p_score))
 
             # Weekly Buy Original
             rsi_w = RSIIndicator(w_df['Close'], window=14).rsi()
@@ -150,11 +154,21 @@ for stock in stocks:
                 sell_signals.append(stock)
     except: continue
 
-# Sorting
+# --- SORTING SECTION ---
+# SSF Ranking (Original)
 weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
 top_weekly, rest_weekly = weekly_buy_scored[:5], weekly_buy_scored[5:]
 monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
 top_monthly, rest_monthly = monthly_buy_scored[:5], monthly_buy_scored[5:]
+
+# Predictive Ranking (NEW ADDITION)
+# Sort Predictive UP: Highest Money Flow at the top
+predictive_up = sorted(predictive_up, key=lambda x: x[1], reverse=True)
+predictive_up = [x[0] for x in predictive_up]
+
+# Sort Predictive DOWN: Most negative Money Flow (heaviest distribution) at the top
+predictive_down = sorted(predictive_down, key=lambda x: x[1])
+predictive_down = [x[0] for x in predictive_down]
 
 # Update Sheets
 update_sheet("Top_Weekly", [x[0] for x in top_weekly])
@@ -195,13 +209,13 @@ Monthly Sell:
 """
 
 msg2 = f"""
-🔮 PREDICTIVE QUANT (SIDE-CAR)
+🔮 PREDICTIVE QUANT (RANKED)
 
-Predictive UP (Coiling):
+Predictive UP (Strongest Buying First):
 {predictive_up}
 
 
-Predictive DOWN (Exhaustion):
+Predictive DOWN (Heaviest Selling First):
 {predictive_down}
 """
 
