@@ -98,17 +98,20 @@ def get_quant_decision(prices):
 # ------------------------------
 
 def send_telegram_message(message):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        response = requests.post(
+            url,
+            data={
+                "chat_id": CHAT_ID,
+                "text": message
+            }
+        )
+        # Fixed the NameError by keeping the print inside the function
+        print(f"Telegram Response: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"Telegram Failed: {e}")
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": message
-        }
-    )
-print(f"Telegram Response: {response.status_code} - {response.text}")
 
 creds = Credentials.from_service_account_file(
     "credentials.json",
@@ -366,8 +369,7 @@ Quant Monthly SELLS: {quant_m_sells}
 
 send_telegram_message(message)
 
-print("Telegram notification sent.")
-
+print("Process finished successfully.")
 
 
 
