@@ -22,7 +22,7 @@ jobs:
       - name: Install libraries
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install yfinance pandas numpy ta gspread google-auth google-auth-oauthlib google-auth-httplib2 openpyxl
+          python3 -m pip install yfinance pandas numpy ta gspread google-auth google-auth-oauthlib google-auth-httplib2 openpyxl scipy
 
       - name: Create credentials.json
         run: echo '${{ secrets.GOOGLE_CREDS }}' > credentials.json
