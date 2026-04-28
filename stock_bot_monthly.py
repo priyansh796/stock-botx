@@ -80,7 +80,7 @@ def rolling_setup_weekly(df, lookback):
 
     return False
 
-# --- NEW QUANT ENGINE FUNCTIONS (ADDED BY ASSISTANT) ---
+# --- QUANT ENGINE FUNCTIONS ---
 def get_hurst_exponent(prices):
     lags = range(2, 20)
     tau = [np.sqrt(np.std(np.subtract(prices[lag:], prices[:-lag]))) for lag in lags]
@@ -92,12 +92,10 @@ def get_quant_decision(prices):
     h_exp = get_hurst_exponent(prices)
     series = pd.Series(prices)
     z_score = (prices[-1] - series.rolling(30).mean().iloc[-1]) / series.rolling(30).std().iloc[-1]
-    # TRIGGER: Buy if Mean Reverting (H<0.48) and Exhausted (Z < -2.2)
     if h_exp < 0.48 and z_score < -2.2: return "BUY"
-    # TRIGGER: Sell if Fair Value Reached (Z > 1.5) or Trend Breakdown (H > 0.6)
     elif z_score > 1.5 or (h_exp > 0.6 and z_score < -1.0): return "SELL"
     return "HOLD"
-# -------------------------------------------------------
+# ------------------------------
 
 def send_telegram_message(message):
 
@@ -158,12 +156,12 @@ weekly_sell_signals = []
 sell_signals = []
 fundamental_pass = []
 
-# --- NEW QUANT LISTS ---
+# --- QUANT LISTS ---
 quant_w_buys = []
 quant_w_sells = []
 quant_m_buys = []
 quant_m_sells = []
-# -----------------------
+# -------------------
 
 
 for stock in stocks:
@@ -205,12 +203,11 @@ for stock in stocks:
             and w_latest['SSF_50'] < w_latest['SSF_200']
             and w_latest['SSF_50'] < w_latest['SSF_250']
         )
-        
-        # --- QUANT WEEKLY (SIDE ANALYSIS) ---
+
+        # --- QUANT WEEKLY ---
         q_w_res = get_quant_decision(w_close[-100:])
         if q_w_res == "BUY": quant_w_buys.append(stock)
         elif q_w_res == "SELL": quant_w_sells.append(stock)
-        # ------------------------------------
 
         monthly_df = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
         monthly_df = monthly_df.iloc[:-1]
@@ -244,12 +241,11 @@ for stock in stocks:
             and m_latest['SSF_50'] < m_latest['SSF_200']
             and m_latest['SSF_50'] < m_latest['SSF_250']
         )
-        
-        # --- QUANT MONTHLY (SIDE ANALYSIS) ---
+
+        # --- QUANT MONTHLY ---
         q_m_res = get_quant_decision(m_close[-60:])
         if q_m_res == "BUY": quant_m_buys.append(stock)
         elif q_m_res == "SELL": quant_m_sells.append(stock)
-        # -------------------------------------
 
         if not (weekly_pass or monthly_pass):
             continue
@@ -276,24 +272,16 @@ for stock in stocks:
             stop_loss = m_latest['SSF_50']
             monthly_buy_scored.append((stock, score, stop_loss))
 
-        # ✅ WEEKLY SELL (FINAL UPDATED)
+        # WEEKLY SELL
         close = weekly_df['Close']
         ssf20 = weekly_df['SSF_20']
-
-        if (
-            close.iloc[-2] > ssf20.iloc[-2] and
-            close.iloc[-1] < ssf20.iloc[-1]
-        ):
+        if close.iloc[-2] > ssf20.iloc[-2] and close.iloc[-1] < ssf20.iloc[-1]:
             weekly_sell_signals.append(stock)
 
-        # ✅ MONTHLY SELL (FINAL UPDATED)
+        # MONTHLY SELL
         m_close_series = monthly_df['Close']
         m_ssf20 = monthly_df['SSF_20']
-
-        if (
-            m_close_series.iloc[-2] > m_ssf20.iloc[-2] and
-            m_close_series.iloc[-1] < m_ssf20.iloc[-1]
-        ):
+        if m_close_series.iloc[-2] > m_ssf20.iloc[-2] and m_close_series.iloc[-1] < m_ssf20.iloc[-1]:
             sell_signals.append(stock)
 
     except Exception as e:
@@ -324,10 +312,11 @@ with pd.ExcelWriter(PORTFOLIO_FILE, engine="openpyxl", mode="w") as writer:
     pd.DataFrame(weekly_sell_signals, columns=["Stock"]).to_excel(writer, sheet_name="Weekly_Sell", index=False)
     pd.DataFrame(sell_signals, columns=["Stock"]).to_excel(writer, sheet_name="Sell_Signals", index=False)
     
-    # --- ADD NEW QUANT SHEETS TO EXCEL ---
-    pd.DataFrame(quant_w_buys, columns=["Stock"]).to_excel(writer, sheet_name="Quant_Weekly_Buy", index=False)
-    pd.DataFrame(quant_m_buys, columns=["Stock"]).to_excel(writer, sheet_name="Quant_Monthly_Buy", index=False)
-    # --------------------------------------
+    # SEPARATED QUANT SHEETS
+    pd.DataFrame(quant_w_buys, columns=["Stock"]).to_excel(writer, sheet_name="Quant_Weekly_BUY", index=False)
+    pd.DataFrame(quant_w_sells, columns=["Stock"]).to_excel(writer, sheet_name="Quant_Weekly_SELL", index=False)
+    pd.DataFrame(quant_m_buys, columns=["Stock"]).to_excel(writer, sheet_name="Quant_Monthly_BUY", index=False)
+    pd.DataFrame(quant_m_sells, columns=["Stock"]).to_excel(writer, sheet_name="Quant_Monthly_SELL", index=False)
 
 
 update_sheet("Fundamentals", fundamental_pass)
@@ -338,10 +327,11 @@ update_sheet("Rest_Monthly", [x[0] for x in rest_monthly])
 update_sheet("Weekly_Sell", weekly_sell_signals)
 update_sheet("Sell_Signals", sell_signals)
 
-# --- UPDATE GOOGLE SHEETS WITH QUANT RESULTS ---
-update_sheet("Quant_Weekly_Signals", quant_w_buys)
-update_sheet("Quant_Monthly_Signals", quant_m_buys)
-# ------------------------------------------------
+# SEPARATED GOOGLE SHEETS
+update_sheet("Quant_Weekly_BUY", quant_w_buys)
+update_sheet("Quant_Weekly_SELL", quant_w_sells)
+update_sheet("Quant_Monthly_BUY", quant_m_buys)
+update_sheet("Quant_Monthly_SELL", quant_m_sells)
 
 update_timestamp()
 
@@ -367,9 +357,11 @@ Weekly Sell:
 Sell Signals:
 {sell_signals}
 
-[NEW QUANT ENGINE OUTPUT]
-Quant Weekly Buys: {quant_w_buys}
-Quant Monthly Buys: {quant_m_buys}
+[QUANT ENGINE]
+Quant Weekly BUYS: {quant_w_buys}
+Quant Weekly SELLS: {quant_w_sells}
+Quant Monthly BUYS: {quant_m_buys}
+Quant Monthly SELLS: {quant_m_sells}
 """
 
 send_telegram_message(message)
