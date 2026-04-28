@@ -107,7 +107,6 @@ def send_telegram_message(message):
                 "text": message
             }
         )
-        # Fixed the NameError by keeping the print inside the function
         print(f"Telegram Response: {response.status_code} - {response.text}")
     except Exception as e:
         print(f"Telegram Failed: {e}")
@@ -339,8 +338,10 @@ update_sheet("Quant_Monthly_SELL", quant_m_sells)
 update_timestamp()
 
 
-message = f"""
-Stock Bot Run Completed
+# --- SPLIT TELEGRAM NOTIFICATIONS TO PREVENT CHARACTER LIMIT ERRORS ---
+
+message_part1 = f"""
+🚀 Stock Bot Run Part 1: Original Strategy
 
 Top Weekly Buy:
 {[x[0] for x in top_weekly]}
@@ -359,17 +360,31 @@ Weekly Sell:
 
 Sell Signals:
 {sell_signals}
-
-[QUANT ENGINE]
-Quant Weekly BUYS: {quant_w_buys}
-Quant Weekly SELLS: {quant_w_sells}
-Quant Monthly BUYS: {quant_m_buys}
-Quant Monthly SELLS: {quant_m_sells}
 """
 
-send_telegram_message(message)
+message_part2 = f"""
+📊 Stock Bot Run Part 2: Quant Engine
 
-print("Process finished successfully.")
+Quant Weekly BUYS:
+{quant_w_buys}
+
+Quant Weekly SELLS:
+{quant_w_sells}
+
+Quant Monthly BUYS:
+{quant_m_buys}
+
+Quant Monthly SELLS:
+{quant_m_sells}
+"""
+
+# Send Part 1
+send_telegram_message(message_part1)
+
+# Send Part 2
+send_telegram_message(message_part2)
+
+print("Process finished successfully with dual notifications.")
 
 
 
