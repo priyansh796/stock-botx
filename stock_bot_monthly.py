@@ -105,8 +105,15 @@ for stock in stocks:
     try:
         ticker = yf.Ticker(stock)
         
-        # WEEKLY
-        w_df = ticker.history(period=WEEKLY_HISTORY, interval="1wk").iloc[:-1]
+        # --- WEEKLY DATA STABILITY LOGIC ---
+        raw_w_df = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
+        now = datetime.now()
+        # Ensure we only use the most recent candle if the week has ended (Friday 4PM onwards)
+        if now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16):
+            w_df = raw_w_df
+        else:
+            w_df = raw_w_df.iloc[:-1]
+
         if len(w_df) >= 300:
             w_close = w_df['Close'].values
             w_df['SSF_20'] = super_smoother(w_close, 20)
@@ -132,13 +139,24 @@ for stock in stocks:
                     score = rsi_w.iloc[-1] + ((w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]) * 100
                     weekly_buy_scored.append((stock, score, w_df['SSF_50'].iloc[-1]))
 
-            # Weekly Sell Original (Corrected Condition)
-            if w_close[-2] > w_df['SSF_50'].iloc[-2]:
-                if w_close[-2] > w_df['SSF_20'].iloc[-2] and w_close[-1] < w_df['SSF_20'].iloc[-1]:
+            # --- UPDATED WEEKLY SELL (TREND-BREAK CONFIRMATION) ---
+            # Index -1: Current (most recent stable), Index -2: Previous
+            if len(w_df) >= 2:
+                prev_healthy = (w_df['Close'].iloc[-2] > w_df['SSF_20'].iloc[-2] and 
+                               w_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
+                curr_broken = w_df['Close'].iloc[-1] < w_df['SSF_20'].iloc[-1]
+                
+                if prev_healthy and curr_broken:
                     weekly_sell_signals.append(stock)
 
-        # MONTHLY
-        m_df = ticker.history(period=MONTHLY_HISTORY, interval="1mo").iloc[:-1]
+        # --- MONTHLY DATA STABILITY LOGIC ---
+        raw_m_df = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
+        # Ensure only the completed month is analyzed unless running at month end
+        if now.day == 1 and now.hour < 16:
+             m_df = raw_m_df.iloc[:-1]
+        else:
+             m_df = raw_m_df.iloc[:-1] # Traditional monthly analysis usually waits for close
+        
         if len(m_df) >= 80:
             m_close = m_df['Close'].values
             m_df['SSF_20'] = super_smoother(m_close, 20)
@@ -222,11 +240,6 @@ Predictive DOWN (Heaviest Selling First):
 send_telegram_message(msg1)
 send_telegram_message(msg2)
 print("Process finished successfully.")
-
-
-
-
-
 
 
 
