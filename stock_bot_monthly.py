@@ -54,7 +54,7 @@ def rolling_setup_weekly(df, lookback):
             return True
     return False
 
-# --- AUDIT HELPER FUNCTION ---
+# --- UPDATED AUDIT HELPER FUNCTION (WITH READABLE LABELS) ---
 def get_audit_data(stock_symbol, local_df):
     try:
         cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
@@ -66,8 +66,22 @@ def get_audit_data(stock_symbol, local_df):
         bb_u, bb_l = ind.get("BB.upper"), ind.get("BB.lower")
         bb_m = ind.get("BB.basis") or ind.get("SMA20") or local_df['SSF_20'].iloc[-1]
         bandwidth = (bb_u - bb_l) / bb_m if all(v is not None for v in [bb_u, bb_l, bb_m]) else 0
-        return [f"{bandwidth:.4f}", f"{ao:.2f}", f"{current_cmf:.4f}"]
-    except: return ["N/A", "N/A", "N/A"]
+        
+        # Recommendations for readability
+        sq_label = "READY" if bandwidth < 0.18 else "LOOSE"
+        mo_label = "BULLISH" if (ao is not None and ao > 0) else "BEARISH"
+        inst_label = "BUYING" if current_cmf > 0.05 else ("EXITING" if current_cmf < -0.05 else "NEUTRAL")
+        
+        # Final Verdict Logic
+        if bandwidth < 0.18 and ao > 0 and current_cmf > 0.05:
+            verdict = "⭐ EXCELLENT"
+        elif current_cmf < -0.07:
+            verdict = "⛔ DANGEROUS"
+        else:
+            verdict = "WATCH"
+
+        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.2f} ({mo_label})", f"{current_cmf:.4f} ({inst_label})", verdict]
+    except: return ["N/A", "N/A", "N/A", "ERROR"]
 
 # --- OPTIMIZED PREDICTIVE ENGINE ---
 def get_predictive_signal(stock_symbol, local_df):
@@ -108,12 +122,12 @@ creds = Credentials.from_service_account_file("credentials.json", scopes=["https
 client = gspread.authorize(creds)
 spreadsheet = client.open(SPREADSHEET_NAME)
 
-# UPDATED: update_sheet now includes Audit Data
+# UPDATED: update_sheet now includes human-readable verdict columns
 def update_sheet(sheet_name, data_list):
     try: sheet = spreadsheet.worksheet(sheet_name)
     except: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
     sheet.clear()
-    headers = [["Stock", "Bandwidth", "Awesome Osc", "CMF"]]
+    headers = [["Stock", "Volatility (Squeeze)", "Momentum (AO)", "Institutional (CMF)", "BOT VERDICT"]]
     rows = []
     if not data_list:
         sheet.update([["No Stocks"]])
@@ -188,7 +202,7 @@ top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x 
 predictive_up = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
 predictive_down = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
 
-# Update Sheets with Audit Logic
+# Update Sheets with Audit Logic & Human Labels
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
