@@ -1,87 +1,229 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from ta.volume import ChaikinMoneyFlowIndicator
+from ta.momentum import RSIIndicator
+from ta.volatility import BollingerBands
+from ta.volume import ChaikinMoneyFlowIndicator # Added for CMF
+import os
+import gspread
+from google.oauth2.service_account import Credentials
+import requests
+from datetime import datetime
 from tradingview_ta import TA_Handler, Interval
 
-# --- TEST SETTINGS ---
-SYMBOL = "HAL.NS"
-TV_SYMBOL = "HAL"
-EXCHANGE = "NSE"
-SCREENER = "india"
+# --- SETTINGS ---
+MARKET_CAP_LIMIT = 5000 * 10**7
+MONTHLY_HISTORY = "15y"
+WEEKLY_HISTORY = "max"
+SPREADSHEET_NAME = "Stock Bot Dashboard"
+TELEGRAM_TOKEN = "8630503074:AAHgONEVwJB_QVZ1GeKBaVGl9Z3Ct0E_yLw"
+CHAT_ID = "8258280498"
 
-def test_hal_prediction():
-    print(f"--- 🔍 PREDICTIVE ENGINE TEST: {SYMBOL} ---")
-    
+# --- ORIGINAL FUNCTIONS ---
+def super_smoother(price, period):
+    a1 = np.exp(-1.414 * np.pi / period)
+    b1 = 2 * a1 * np.cos(1.414 * np.pi / period)
+    c2, c3 = b1, -a1 * a1
+    c1 = 1 - c2 - c3
+    filt = np.zeros(len(price))
+    for i in range(2, len(price)):
+        filt[i] = (c1 * (price[i] + price[i - 1]) / 2 + c2 * filt[i - 1] + c3 * filt[i - 2])
+    return filt
+
+def rolling_cross(close, ssf, lookback):
+    cross_found = False
+    for i in range(1, lookback):
+        if close[-i - 1] < ssf[-i - 1] and close[-i] > ssf[-i]:
+            cross_found = True
+            break
+    return True if (cross_found and close[-1] > ssf[-1]) else False
+
+def rolling_setup_monthly(df, lookback):
+    for i in range(1, lookback):
+        if (df['Close'].iloc[-i] < df['SSF_50'].iloc[-i] and 
+            df['Close'].iloc[-i] < df['SSF_200'].iloc[-i] and 
+            df['Close'].iloc[-i] < df['SSF_250'].iloc[-i]):
+            return True
+    return False
+
+def rolling_setup_weekly(df, lookback):
+    for i in range(1, lookback):
+        if (df['Close'].iloc[-i] < df['SSF_50'].iloc[-i] and 
+            df['Close'].iloc[-i] < df['SSF_100'].iloc[-i] and 
+            df['Close'].iloc[-i] < df['SSF_250'].iloc[-i]):
+            return True
+    return False
+
+# --- OPTIMIZED PREDICTIVE ENGINE (WITH CMF & WEIGHTED SCORING) ---
+def get_predictive_signal(stock_symbol, local_df):
     try:
-        # 1. Pull Weekly Data from Yahoo Finance
-        ticker = yf.Ticker(SYMBOL)
-        df = ticker.history(period="2y", interval="1wk")
-        
-        # 2. Calculate Institutional CMF (The "Big Money" Gate)
+        # 1. Institutional Activity Calculation
         cmf_func = ChaikinMoneyFlowIndicator(
-            high=df['High'], low=df['Low'], 
-            close=df['Close'], volume=df['Volume'], window=20
+            high=local_df['High'], low=local_df['Low'], 
+            close=local_df['Close'], volume=local_df['Volume'], window=20
         )
         current_cmf = cmf_func.chaikin_money_flow().iloc[-1]
 
-        # 3. Pull Squeeze & Momentum from TradingView
-        handler = TA_Handler(
-            symbol=TV_SYMBOL, exchange=EXCHANGE, 
-            screener=SCREENER, interval=Interval.INTERVAL_1_WEEK
-        )
+        # 2. Volatility & Momentum Fetch
+        tv_symbol = stock_symbol.replace(".NS", "")
+        handler = TA_Handler(symbol=tv_symbol, exchange="NSE", screener="india", interval=Interval.INTERVAL_1_WEEK)
         ind = handler.get_analysis().indicators
         
         ao = ind.get("AO")
         bb_u, bb_l = ind.get("BB.upper"), ind.get("BB.lower")
-        bb_m = ind.get("BB.basis") or ind.get("SMA20") # Fallback to SMA20
-
+        bb_m = ind.get("BB.basis") or ind.get("SMA20") or local_df['SSF_20'].iloc[-1]
+        
         if all(v is not None for v in [ao, bb_u, bb_l, bb_m]):
             bandwidth = (bb_u - bb_l) / bb_m
             
             # --- WEIGHTED SCORING ---
-            score = 0
-            details = []
+            up_score = 0
+            if bandwidth < 0.18: up_score += 1      # Squeeze Point
+            if ao > 0: up_score += 1               # Momentum Point
+            if current_cmf > 0.05: up_score += 1   # Institutional Point
             
-            # Point 1: Squeeze
-            if bandwidth < 0.18:
-                score += 1
-                details.append(f"✅ SQUEEZE DETECTED (Bandwidth: {bandwidth:.4f})")
-            else:
-                details.append(f"❌ NO SQUEEZE (Bandwidth: {bandwidth:.4f})")
-                
-            # Point 2: Momentum
-            if ao > 0:
-                score += 1
-                details.append(f"✅ MOMENTUM BULLISH (AO: {ao:.2f})")
-            else:
-                details.append(f"❌ MOMENTUM BEARISH/FLAT (AO: {ao:.2f})")
-                
-            # Point 3: Institutional
-            if current_cmf > 0.05:
-                score += 1
-                details.append(f"✅ INSTITUTIONAL BUYING (CMF: {current_cmf:.4f})")
-            else:
-                details.append(f"❌ NO INSTITUTIONAL SUPPORT (CMF: {current_cmf:.4f})")
+            down_score = 0
+            if bandwidth < 0.18: down_score += 1
+            if ao < 0: down_score += 1
+            if current_cmf < -0.05: down_score += 1
 
-            # --- FINAL VERDICT ---
-            print("\n".join(details))
-            print("-" * 30)
-            print(f"TOTAL WEIGHTED SCORE: {score}/3")
+            if up_score >= 2:
+                final_rank = (up_score * 100) + ((1/bandwidth) * ao)
+                return "PREDICT_UP", final_rank
             
-            if score >= 2:
-                intensity = (1/bandwidth) * ao if bandwidth > 0 else 0
-                print(f"VERDICT: 🚀 PREDICT_UP (Rank Intensity: {intensity:.2f})")
-            else:
-                print("VERDICT: ⚖️ HOLD (Not enough confirmation)")
+            if down_score >= 2:
+                final_rank = (down_score * 100) + ((1/bandwidth) * abs(ao))
+                return "PREDICT_DOWN", final_rank
+                    
+        return "HOLD", 0
+    except:
+        return "HOLD", 0
 
-        else:
-            print("[!] Could not fetch all technical indicators from TradingView.")
+def send_telegram_message(message):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+    except: pass
 
-    except Exception as e:
-        print(f"[!] Error: {e}")
+# --- MAIN ENGINE ---
+creds = Credentials.from_service_account_file("credentials.json", scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
+client = gspread.authorize(creds)
+spreadsheet = client.open(SPREADSHEET_NAME)
 
-if __name__ == "__main__":
-    test_hal_prediction()
+def update_sheet(sheet_name, data):
+    try: sheet = spreadsheet.worksheet(sheet_name)
+    except: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=5)
+    sheet.clear()
+    if not data: sheet.update([["No Stocks"]])
+    else: sheet.update([["Stock"]] + [[x] for x in data])
+
+stocks_df = pd.read_csv("nse_stocks.csv")
+stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
+
+weekly_buy_scored, monthly_buy_scored = [], []
+weekly_sell_signals, sell_signals = [], []
+predictive_up, predictive_down = [], []
+
+for stock in stocks:
+    print(f"Scanning {stock}...")
+    try:
+        ticker = yf.Ticker(stock)
+        now = datetime.now()
+        raw_w = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
+        w_df = raw_w.copy() if (now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16)) else raw_w.iloc[:-1].copy()
+
+        if len(w_df) >= 300:
+            w_close = w_df['Close'].values
+            w_df['SSF_20'] = super_smoother(w_close, 20)
+            w_df['SSF_50'] = super_smoother(w_close, 50)
+            w_df['SSF_100'] = super_smoother(w_close, 100)
+            w_df['SSF_200'] = super_smoother(w_close, 200)
+            w_df['SSF_250'] = super_smoother(w_close, 250)
+            
+            # Predictive Logic Call
+            p_res, p_rank = get_predictive_signal(stock, w_df)
+            if p_res == "PREDICT_UP": predictive_up.append((stock, p_rank))
+            elif p_res == "PREDICT_DOWN": predictive_down.append((stock, p_rank))
+
+            # Original Weekly Strategy
+            rsi_w = RSIIndicator(w_df['Close'], window=14).rsi()
+            rsi_ma_w = rsi_w.rolling(14).mean()
+            if (rolling_setup_weekly(w_df, 20) and rolling_cross(w_close, w_df['SSF_50'].values, 6) and 
+                rsi_w.iloc[-1] > rsi_ma_w.iloc[-1] and w_df['SSF_50'].iloc[-1] < w_df['SSF_200'].iloc[-1]):
+                
+                info = ticker.info
+                if info.get("marketCap", 0) >= MARKET_CAP_LIMIT and info.get("profitMargins", 0) > 0:
+                    score = rsi_w.iloc[-1] + ((w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]) * 100
+                    weekly_buy_scored.append((stock, score))
+
+            if len(w_df) >= 2:
+                prev_h = (w_df['Close'].iloc[-2] > w_df['SSF_20'].iloc[-2] and w_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
+                if prev_h and w_df['Close'].iloc[-1] < w_df['SSF_20'].iloc[-1]:
+                    weekly_sell_signals.append(stock)
+
+        # Original Monthly Strategy
+        raw_m = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
+        m_df = raw_m.iloc[:-1].copy()
+        if len(m_df) >= 80:
+            m_close = m_df['Close'].values
+            m_df['SSF_20'] = super_smoother(m_close, 20)
+            m_df['SSF_50'] = super_smoother(m_close, 50)
+            if rolling_setup_monthly(m_df, 12) and rolling_cross(m_close, m_df['SSF_50'].values, 3):
+                score_m = 50 + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
+                monthly_buy_scored.append((stock, score_m))
+            if m_close[-2] > m_df['SSF_20'].iloc[-2] and m_close[-1] < m_df['SSF_20'].iloc[-1]:
+                sell_signals.append(stock)
+    except: continue
+
+# --- OUTPUT PROCESSING (RESORED ORIGINAL ORDER) ---
+weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
+top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in weekly_buy_scored[5:]]
+monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
+top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
+
+predictive_up = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
+predictive_down = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
+
+update_sheet("Top_Weekly", top_weekly)
+update_sheet("Rest_Weekly", rest_weekly)
+update_sheet("Top_Monthly", top_monthly)
+update_sheet("Rest_Monthly", rest_monthly)
+update_sheet("Weekly_Sell", weekly_sell_signals)
+update_sheet("Sell_Signals", sell_signals)
+update_sheet("Predictive_UP", predictive_up)
+update_sheet("Predictive_DOWN", predictive_down)
+
+# RESTORED ORIGINAL MESSAGE FORMAT
+msg1 = f"""🚀 ORIGINAL STRATEGY OUTPUTS
+
+Top Weekly Buy:
+{top_weekly}
+
+Rest Weekly Buy:
+{rest_weekly}
+
+Top Monthly Buy:
+{top_monthly}
+
+Rest Monthly Buy:
+{rest_monthly}
+
+Weekly Sell:
+{weekly_sell_signals}
+
+Monthly Sell:
+{sell_signals}"""
+
+msg2 = f"""🔮 PREDICTIVE QUANT
+
+Predictive UP:
+{predictive_up[:15]}
+
+Predictive DOWN:
+{predictive_down[:15]}"""
+
+send_telegram_message(msg1)
+send_telegram_message(msg2)
+print("Process Complete.")
 
 
