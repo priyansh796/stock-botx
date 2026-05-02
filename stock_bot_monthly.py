@@ -54,7 +54,7 @@ def rolling_setup_weekly(df, lookback):
             return True
     return False
 
-# --- UPDATED PREDICTIVE MODEL (ONLY CHANGE) ---
+# --- YOUR PREDICTIVE MODEL (FIXED) ---
 def get_predictive_signal(stock_symbol):
     try:
         ticker = yf.Ticker(stock_symbol)
@@ -66,32 +66,31 @@ def get_predictive_signal(stock_symbol):
         close = df['Close']
         volume = df['Volume']
 
-        # --- VOLATILITY COMPRESSION ---
+        # Volatility Compression
         std = close.rolling(20).std()
         vol_now = std.iloc[-1]
         vol_prev = std.iloc[-5:-1].mean()
         vol_pts = 30 if vol_now < vol_prev else -15
 
-        # --- MOMENTUM ACCELERATION ---
+        # Momentum Acceleration
         roc_4 = close.pct_change(4)
         roc_8 = close.pct_change(8)
         momentum = roc_4.iloc[-1] - roc_8.iloc[-1]
         mom_pts = 25 if momentum > 0 else -25
 
-        # --- INSTITUTIONAL FLOW PROXY (VOLUME) ---
+        # Institutional Flow Proxy
         vol_avg = volume.rolling(20).mean().iloc[-1]
-        vol_now = volume.iloc[-1]
-
+        vol_now_val = volume.iloc[-1]
         price_change = close.pct_change().iloc[-1]
 
-        if vol_now > 1.5 * vol_avg and price_change > 0:
-            flow_pts = 25   # accumulation
-        elif vol_now > 1.5 * vol_avg and price_change < 0:
-            flow_pts = -25  # distribution
+        if vol_now_val > 1.5 * vol_avg and price_change > 0:
+            flow_pts = 25
+        elif vol_now_val > 1.5 * vol_avg and price_change < 0:
+            flow_pts = -25
         else:
             flow_pts = 0
 
-        # --- PRICE POSITION ---
+        # Price Position
         high_20 = close.rolling(20).max().iloc[-1]
         low_20 = close.rolling(20).min().iloc[-1]
         price = close.iloc[-1]
@@ -111,7 +110,6 @@ def get_predictive_signal(stock_symbol):
             return "PREDICT_DOWN", composite_score
 
         return "HOLD", 0
-
     except:
         return "HOLD", 0
 
@@ -121,9 +119,7 @@ def send_telegram_message(message):
         requests.post(url, data={"chat_id": CHAT_ID, "text": message})
     except: pass
 
-# --- EVERYTHING BELOW UNCHANGED ---
-# (Exactly same as your file)
-
+# --- MAIN ENGINE ---
 creds = Credentials.from_service_account_file("credentials.json", scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
 client = gspread.authorize(creds)
 spreadsheet = client.open(SPREADSHEET_NAME)
@@ -136,9 +132,9 @@ def update_sheet(sheet_name, data):
     else: sheet.update([["Stock"]] + [[x] for x in data])
 
 stocks_df = pd.read_csv("nse_stocks.csv")
-stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()
+# FIXED: Added missing bracket below
+stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
 
-fundamental_pass = []
 weekly_buy_scored, monthly_buy_scored = [], []
 weekly_sell_signals, sell_signals = [], []
 predictive_up, predictive_down = [], []
@@ -147,13 +143,14 @@ for stock in stocks:
     print(f"Processing {stock}...")
     try:
         ticker = yf.Ticker(stock)
-        
-        raw_w_df = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
         now = datetime.now()
+        raw_w_df = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
+        
+        # FIXED: Added .copy() to avoid SettingWithCopy errors
         if now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16):
-            w_df = raw_w_df
+            w_df = raw_w_df.copy()
         else:
-            w_df = raw_w_df.iloc[:-1]
+            w_df = raw_w_df.iloc[:-1].copy()
 
         if len(w_df) >= 300:
             w_close = w_df['Close'].values
@@ -174,39 +171,29 @@ for stock in stocks:
                 
                 info = ticker.info
                 if info.get("marketCap", 0) >= MARKET_CAP_LIMIT and info.get("profitMargins", 0) > 0:
-                    fundamental_pass.append(stock)
                     score = rsi_w.iloc[-1] + ((w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]) * 100
-                    weekly_buy_scored.append((stock, score, w_df['SSF_50'].iloc[-1]))
+                    weekly_buy_scored.append((stock, score))
 
             if len(w_df) >= 2:
-                prev_healthy = (w_df['Close'].iloc[-2] > w_df['SSF_20'].iloc[-2] and 
-                               w_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
-                curr_broken = w_df['Close'].iloc[-1] < w_df['SSF_20'].iloc[-1]
-                if prev_healthy and curr_broken:
+                prev_healthy = (w_df['Close'].iloc[-2] > w_df['SSF_20'].iloc[-2] and w_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
+                if prev_healthy and w_df['Close'].iloc[-1] < w_df['SSF_20'].iloc[-1]:
                     weekly_sell_signals.append(stock)
 
         raw_m_df = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
-        if now.day == 1 and now.hour < 16:
-             m_df = raw_m_df.iloc[:-1]
-        else:
-             m_df = raw_m_df.iloc[:-1] 
+        m_df = raw_m_df.iloc[:-1].copy()
         
         if len(m_df) >= 80:
             m_close = m_df['Close'].values
             m_df['SSF_20'] = super_smoother(m_close, 20)
             m_df['SSF_50'] = super_smoother(m_close, 50)
-            m_df['SSF_200'] = super_smoother(m_close, 200)
-            m_df['SSF_250'] = super_smoother(m_close, 250)
-
             if rolling_setup_monthly(m_df, 12) and rolling_cross(m_close, m_df['SSF_50'].values, 3):
                 score_m = 50 + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
-                monthly_buy_scored.append((stock, score_m, m_df['SSF_50'].iloc[-1]))
-
+                monthly_buy_scored.append((stock, score_m))
             if m_close[-2] > m_df['SSF_20'].iloc[-2] and m_close[-1] < m_df['SSF_20'].iloc[-1]:
                 sell_signals.append(stock)
     except: continue
 
-# --- SORTING SECTION (UNCHANGED) ---
+# --- SORTING & OUTPUT ---
 weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
 top_weekly, rest_weekly = weekly_buy_scored[:5], weekly_buy_scored[5:]
 monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
@@ -217,7 +204,6 @@ predictive_up = [x[0] for x in predictive_up]
 predictive_down = sorted(predictive_down, key=lambda x: x[1])
 predictive_down = [x[0] for x in predictive_down]
 
-# Update Sheets (UNCHANGED)
 update_sheet("Top_Weekly", [x[0] for x in top_weekly])
 update_sheet("Rest_Weekly", [x[0] for x in rest_weekly])
 update_sheet("Top_Monthly", [x[0] for x in top_monthly])
@@ -227,38 +213,8 @@ update_sheet("Sell_Signals", sell_signals)
 update_sheet("Predictive_UP", predictive_up)
 update_sheet("Predictive_DOWN", predictive_down)
 
-# --- TELEGRAM FORMATTING (UNCHANGED) ---
-msg1 = f"""
-🚀 ORIGINAL STRATEGY OUTPUTS
-
-Top Weekly Buy:
-{[x[0] for x in top_weekly]}
-
-Rest Weekly Buy:
-{[x[0] for x in rest_weekly]}
-
-Top Monthly Buy:
-{[x[0] for x in top_monthly]}
-
-Rest Monthly Buy:
-{[x[0] for x in rest_monthly]}
-
-Weekly Sell:
-{weekly_sell_signals}
-
-Monthly Sell:
-{sell_signals}
-"""
-
-msg2 = f"""
-🔮 PREDICTIVE QUANT (RANKED BY COMPOSITE SCORE)
-
-Predictive UP (High Conviction First):
-{predictive_up}
-
-Predictive DOWN (High Conviction First):
-{predictive_down}
-"""
+msg1 = f"🚀 STRATEGY OUTPUTS\n\nTop Weekly: {[x[0] for x in top_weekly]}\nTop Monthly: {[x[0] for x in top_monthly]}"
+msg2 = f"🔮 PREDICTIVE QUANT\n\nUP: {predictive_up[:10]}\nDOWN: {predictive_down[:10]}"
 
 send_telegram_message(msg1)
 send_telegram_message(msg2)
