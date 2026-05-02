@@ -1,92 +1,234 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from ta.momentum import RSIIndicator, AwesomeOscillatorIndicator
+from ta.volatility import BollingerBands
+from ta.volume import ChaikinMoneyFlowIndicator 
+import os
 import gspread
 from google.oauth2.service_account import Credentials
-from tradingview_ta import TA_Handler, Interval
-from ta.momentum import AwesomeOscillatorIndicator
-from ta.volatility import BollingerBands
+import requests
+from datetime import datetime
 import time
 
 # --- SETTINGS ---
-SPREADSHEET_NAME = "Stock Bot Dashboard" 
-TEST_LIMIT = 10 
+MARKET_CAP_LIMIT = 5000 * 10**7
+MONTHLY_HISTORY = "15y"
+WEEKLY_HISTORY = "max"
+SPREADSHEET_NAME = "Stock Bot Dashboard"
+TELEGRAM_TOKEN = "8630503074:AAHgONEVwJB_QVZ1GeKBaVGl9Z3Ct0E_yLw"
+CHAT_ID = "8258280498"
 
-def fetch_tv_values(symbol):
-    """Fetches raw numbers from TradingView."""
-    try:
-        tv_symbol = symbol.split('.')[0]
-        handler = TA_Handler(symbol=tv_symbol, exchange="NSE", screener="india", interval=Interval.INTERVAL_1_WEEK)
-        ind = handler.get_analysis().indicators
-        ao = ind.get("AO")
-        bb_u = ind.get("BB.upper")
-        bb_l = ind.get("BB.lower")
-        bb_m = ind.get("BB.basis") or ind.get("SMA20")
-        bw = (bb_u - bb_l) / bb_m if bb_m else 0
-        return ao, bw
-    except:
-        return None, None
+# --- CORE MATH FUNCTIONS ---
+def super_smoother(price, period):
+    a1 = np.exp(-1.414 * np.pi / period)
+    b1 = 2 * a1 * np.cos(1.414 * np.pi / period)
+    c2, c3 = b1, -a1 * a1
+    c1 = 1 - c2 - c3
+    filt = np.zeros(len(price))
+    for i in range(2, len(price)):
+        filt[i] = (c1 * (price[i] + price[i - 1]) / 2 + c2 * filt[i - 1] + c3 * filt[i - 2])
+    return filt
 
-def fetch_yf_ta_values(df):
-    """Calculates numbers using YFinance data + TA Library."""
+def rolling_cross(close, ssf, lookback):
+    cross_found = False
+    for i in range(1, lookback):
+        if close[-i - 1] < ssf[-i - 1] and close[-i] > ssf[-i]:
+            cross_found = True
+            break
+    return True if (cross_found and close[-1] > ssf[-1]) else False
+
+def rolling_setup_monthly(df, lookback):
+    for i in range(1, lookback):
+        if (df['Close'].iloc[-i] < df['SSF_50'].iloc[-i] and 
+            df['Close'].iloc[-i] < df['SSF_200'].iloc[-i] and 
+            df['Close'].iloc[-i] < df['SSF_250'].iloc[-i]):
+            return True
+    return False
+
+def rolling_setup_weekly(df, lookback):
+    for i in range(1, lookback):
+        if (df['Close'].iloc[-i] < df['SSF_50'].iloc[-i] and 
+            df['Close'].iloc[-i] < df['SSF_100'].iloc[-i] and 
+            df['Close'].iloc[-i] < df['SSF_250'].iloc[-i]):
+            return True
+    return False
+
+# --- UPDATED AUDIT HELPER (USING TA LIBRARY - NO TRADINGVIEW) ---
+def get_audit_data(stock_symbol, local_df):
     try:
-        # AO Calculation
-        ao_ins = AwesomeOscillatorIndicator(high=df['High'], low=df['Low'])
-        ao_val = ao_ins.awesome_oscillator().iloc[-1]
+        # 1. CMF
+        cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
+        current_cmf = cmf_func.chaikin_money_flow().iloc[-1]
         
-        # Bandwidth Calculation
-        bb_ins = BollingerBands(close=df['Close'])
-        bw_val = (bb_ins.bollinger_hband().iloc[-1] - bb_ins.bollinger_lband().iloc[-1]) / bb_ins.bollinger_mavg().iloc[-1]
+        # 2. Awesome Oscillator (Local Extract)
+        ao_func = AwesomeOscillatorIndicator(high=local_df['High'], low=local_df['Low'])
+        ao = ao_func.awesome_oscillator().iloc[-1]
         
-        return ao_val, bw_val
-    except:
-        return None, None
+        # 3. Bollinger Bandwidth (Local Extract)
+        bb = BollingerBands(close=local_df['Close'])
+        bb_u, bb_l, bb_m = bb.bollinger_hband().iloc[-1], bb.bollinger_lband().iloc[-1], bb.bollinger_mavg().iloc[-1]
+        bandwidth = (bb_u - bb_l) / bb_m if bb_m != 0 else 0
+        
+        # Recommendations for readability
+        sq_label = "READY" if bandwidth < 0.18 else "LOOSE"
+        mo_label = "BULLISH" if ao > 0 else "BEARISH"
+        inst_label = "BUYING" if current_cmf > 0.05 else ("EXITING" if current_cmf < -0.05 else "NEUTRAL")
+        
+        # Bot Verdict Logic
+        if bandwidth < 0.18 and ao > 0 and current_cmf > 0.05:
+            verdict = "⭐ EXCELLENT"
+        elif current_cmf < -0.07:
+            verdict = "⛔ DANGEROUS"
+        else:
+            verdict = "WATCH"
+
+        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.2f} ({mo_label})", f"{current_cmf:.4f} ({inst_label})", verdict]
+    except: return ["N/A", "N/A", "N/A", "ERROR"]
+
+# --- PREDICTIVE ENGINE ---
+def get_predictive_signal(stock_symbol, local_df):
+    try:
+        # CMF
+        cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
+        current_cmf = cmf_func.chaikin_money_flow().iloc[-1]
+        
+        # AO
+        ao_func = AwesomeOscillatorIndicator(high=local_df['High'], low=local_df['Low'])
+        ao = ao_func.awesome_oscillator().iloc[-1]
+        
+        # BB Bandwidth
+        bb = BollingerBands(close=local_df['Close'])
+        bb_u, bb_l, bb_m = bb.bollinger_hband().iloc[-1], bb.bollinger_lband().iloc[-1], bb.bollinger_mavg().iloc[-1]
+        bandwidth = (bb_u - bb_l) / bb_m if bb_m != 0 else 1.0 # Default high to prevent false signal
+
+        up_score = 0
+        if bandwidth < 0.18: up_score += 1
+        if ao > 0: up_score += 1
+        if current_cmf > 0.05: up_score += 1
+        
+        down_score = 0
+        if bandwidth < 0.18: down_score += 1
+        if ao < 0: down_score += 1
+        if current_cmf < -0.05: down_score += 1
+        
+        if up_score >= 2:
+            return "PREDICT_UP", (up_score * 100) + ((1/bandwidth) * ao)
+        if down_score >= 2:
+            return "PREDICT_DOWN", (down_score * 100) + ((1/bandwidth) * abs(ao))
+            
+        return "HOLD", 0
+    except: return "HOLD", 0
+
+def send_telegram_message(message):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+    except: pass
+
+# --- MAIN ENGINE ---
+creds = Credentials.from_service_account_file("credentials.json", scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
+client = gspread.authorize(creds)
+spreadsheet = client.open(SPREADSHEET_NAME)
+
+def update_sheet(sheet_name, data_list):
+    try: sheet = spreadsheet.worksheet(sheet_name)
+    except: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
+    sheet.clear()
+    headers = [["Stock", "Volatility (Squeeze)", "Momentum (AO)", "Institutional (CMF)", "BOT VERDICT"]]
+    rows = []
+    if not data_list:
+        sheet.update([["No Stocks"]])
+        return
+    for stock in data_list:
+        ticker = yf.Ticker(stock)
+        df = ticker.history(period="1y", interval="1wk")
+        if not df.empty:
+            audit = get_audit_data(stock, df)
+            rows.append([stock] + audit)
+        time.sleep(0.5) # Anti-throttle pause for Google Sheets
+    sheet.update(headers + rows)
 
 # --- EXECUTION ---
-creds = Credentials.from_service_account_file("credentials.json", 
-        scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
-client = gspread.authorize(creds)
-sheet = client.open(SPREADSHEET_NAME).worksheet("Top_Weekly")
-
 stocks_df = pd.read_csv("nse_stocks.csv")
-stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().head(TEST_LIMIT).tolist()]
+stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
 
-print(f"🚀 Running Side-by-Side Comparison on {TEST_LIMIT} stocks...")
-
-headers = [["Stock", "TV AO", "YF AO", "AO Diff", "TV Bandwidth", "YF Bandwidth", "BW Diff"]]
-rows = []
+weekly_buy_scored, monthly_buy_scored = [], []
+weekly_sell_signals, sell_signals = [], []
+predictive_up, predictive_down = [] , []
 
 for stock in stocks:
-    print(f"Comparing {stock}...")
+    print(f"Scanning {stock}...")
     try:
-        # 1. Get TV Data
-        tv_ao, tv_bw = fetch_tv_values(stock)
-        
-        # 2. Get YF Data
         ticker = yf.Ticker(stock)
-        hist = ticker.history(period="1y", interval="1wk")
-        yf_ao, yf_bw = fetch_yf_ta_values(hist)
-        
-        # 3. Calculate Differences
-        ao_diff = abs(tv_ao - yf_ao) if (tv_ao and yf_ao) else "N/A"
-        bw_diff = abs(tv_bw - yf_bw) if (tv_bw and yf_bw) else "N/A"
-        
-        rows.append([
-            stock, 
-            round(tv_ao, 2) if tv_ao else "TIMEOUT", 
-            round(yf_ao, 2) if yf_ao else "ERR",
-            round(ao_diff, 4) if isinstance(ao_diff, float) else "N/A",
-            round(tv_bw, 4) if tv_bw else "TIMEOUT",
-            round(yf_bw, 4) if yf_bw else "ERR",
-            round(bw_diff, 6) if isinstance(bw_diff, float) else "N/A"
-        ])
-        
-        time.sleep(2) # Extra delay to help TradingView stay connected
-    except Exception as e:
-        print(f"Error on {stock}: {e}")
+        now = datetime.now()
+        raw_w = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
+        w_df = raw_w.copy() if (now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16)) else raw_w.iloc[:-1].copy()
 
-sheet.clear()
-sheet.update(headers + rows)
-print("\n✅ COMPARISON COMPLETE. Check the 'Top_Weekly' sheet.")
+        if len(w_df) >= 300:
+            w_close = w_df['Close'].values
+            w_df['SSF_20'] = super_smoother(w_close, 20)
+            w_df['SSF_50'] = super_smoother(w_close, 50)
+            w_df['SSF_100'] = super_smoother(w_close, 100)
+            w_df['SSF_200'] = super_smoother(w_close, 200)
+            w_df['SSF_250'] = super_smoother(w_close, 250)
+            
+            p_res, p_rank = get_predictive_signal(stock, w_df)
+            if p_res == "PREDICT_UP": predictive_up.append((stock, p_rank))
+            elif p_res == "PREDICT_DOWN": predictive_down.append((stock, p_rank))
+
+            rsi_w = RSIIndicator(w_df['Close'], window=14).rsi()
+            rsi_ma_w = rsi_w.rolling(14).mean()
+            if (rolling_setup_weekly(w_df, 20) and rolling_cross(w_close, w_df['SSF_50'].values, 6) and 
+                rsi_w.iloc[-1] > rsi_ma_w.iloc[-1] and w_df['SSF_50'].iloc[-1] < w_df['SSF_200'].iloc[-1]):
+                
+                info = ticker.info
+                if info.get("marketCap", 0) >= MARKET_CAP_LIMIT and info.get("profitMargins", 0) > 0:
+                    score = rsi_w.iloc[-1] + ((w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]) * 100
+                    weekly_buy_scored.append((stock, score))
+
+            if len(w_df) >= 2:
+                prev_h = (w_df['Close'].iloc[-2] > w_df['SSF_20'].iloc[-2] and w_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
+                if prev_h and w_df['Close'].iloc[-1] < w_df['SSF_20'].iloc[-1]:
+                    weekly_sell_signals.append(stock)
+
+        raw_m = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
+        m_df = raw_m.iloc[:-1].copy()
+        if len(m_df) >= 80:
+            m_close = m_df['Close'].values
+            m_df['SSF_20'] = super_smoother(m_close, 20)
+            m_df['SSF_50'] = super_smoother(m_close, 50)
+            if rolling_setup_monthly(m_df, 12) and rolling_cross(m_close, m_df['SSF_50'].values, 3):
+                score_m = 50 + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
+                monthly_buy_scored.append((stock, score_m))
+            if m_close[-2] > m_df['SSF_20'].iloc[-2] and m_close[-1] < m_df['SSF_20'].iloc[-1]:
+                sell_signals.append(stock)
+    except: continue
+
+# Sorting and Final Processing
+weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
+top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in weekly_buy_scored[5:]]
+monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
+top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
+predictive_up = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
+predictive_down = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
+
+# Update Sheets
+update_sheet("Top_Weekly", top_weekly)
+update_sheet("Rest_Weekly", rest_weekly)
+update_sheet("Top_Monthly", top_monthly)
+update_sheet("Rest_Monthly", rest_monthly)
+update_sheet("Weekly_Sell", weekly_sell_signals)
+update_sheet("Sell_Signals", sell_signals)
+update_sheet("Predictive_UP", predictive_up)
+update_sheet("Predictive_DOWN", predictive_down)
+
+# Telegram Messaging
+msg1 = f"🚀 ORIGINAL STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
+msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up[:15]}\n\nPredictive DOWN:\n{predictive_down[:15]}"
+send_telegram_message(msg1)
+send_telegram_message(msg2)
+
+print("Process Complete.")
 
 
