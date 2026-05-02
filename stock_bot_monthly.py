@@ -133,9 +133,9 @@ for stock in stocks:
         raw_w_df = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
         now = datetime.now()
         if now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16):
-            w_df = raw_w_df
+            w_df = raw_w_df.copy() # Resolved Warning
         else:
-            w_df = raw_w_df.iloc[:-1]
+            w_df = raw_w_df.iloc[:-1].copy() # Resolved Warning
 
         if len(w_df) >= 300:
             w_close = w_df['Close'].values
@@ -172,9 +172,9 @@ for stock in stocks:
         # --- MONTHLY DATA STABILITY LOGIC (UNCHANGED) ---
         raw_m_df = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
         if now.day == 1 and now.hour < 16:
-             m_df = raw_m_df.iloc[:-1]
+             m_df = raw_m_df.iloc[:-1].copy() # Resolved Warning
         else:
-             m_df = raw_m_df.iloc[:-1] 
+             m_df = raw_m_df.iloc[:-1].copy() # Resolved Warning
         
         if len(m_df) >= 80:
             m_close = m_df['Close'].values
