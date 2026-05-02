@@ -53,45 +53,26 @@ def rolling_setup_weekly(df, lookback):
             return True
     return False
 
-# --- INNOVATIVE PREDICTIVE ENGINE ---
-def get_predictive_signal(stock_symbol, local_df):
+# --- PREDICTIVE ENGINE (ONLY AWESOME OSCILLATOR) ---
+def get_predictive_signal(stock_symbol):
     try:
         tv_symbol = stock_symbol.replace(".NS", "")
         handler = TA_Handler(symbol=tv_symbol, exchange="NSE", screener="india", interval=Interval.INTERVAL_1_WEEK)
         analysis = handler.get_analysis()
         ind = analysis.indicators
         
-        hma = ind.get("HullMA9")
+        # Pull Awesome Oscillator directly from TradingView
         ao = ind.get("AO")
-        bb_upper = ind.get("BB.upper")
-        bb_lower = ind.get("BB.lower")
-        bb_mid = ind.get("BB.basis")
         
-        # Manual CMF for accuracy
-        c, l, h, v = local_df['Close'], local_df['Low'], local_df['High'], local_df['Volume']
-        mfm = (((c - l) - (h - c)) / (h - l)).fillna(0)
-        cmf = ((mfm * v).rolling(20).sum() / v.rolling(20).sum()).iloc[-1]
-
-        score = 0
-        current_price = c.iloc[-1]
-        
-        if bb_upper and bb_lower and bb_mid:
-            bb_width = (bb_upper - bb_lower) / bb_mid
-            if bb_width < 0.12: score += 30 
-        
-        if hma and current_price > hma: score += 25
-        elif hma and current_price < hma: score -= 25
-        
-        if ao and ao > 0: score += 25
-        elif ao and ao < 0: score -= 25
-        
-        if cmf > 0.1: score += 20
-        elif cmf < -0.05: score -= 20
-
-        if score >= 50: return "PREDICT_UP", score
-        elif score <= -50: return "PREDICT_DOWN", score
+        if ao is not None:
+            if ao > 0:
+                return "PREDICT_UP", ao
+            elif ao < 0:
+                return "PREDICT_DOWN", ao
+                
         return "HOLD", 0
-    except: return "HOLD", 0
+    except:
+        return "HOLD", 0
 
 def send_telegram_message(message):
     try:
@@ -99,7 +80,7 @@ def send_telegram_message(message):
         requests.post(url, data={"chat_id": CHAT_ID, "text": message})
     except: pass
 
-# --- MAIN SCANNER ---
+# --- MAIN ENGINE ---
 creds = Credentials.from_service_account_file("credentials.json", scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
 client = gspread.authorize(creds)
 spreadsheet = client.open(SPREADSHEET_NAME)
@@ -134,7 +115,8 @@ for stock in stocks:
             w_df['SSF_200'] = super_smoother(w_close, 200)
             w_df['SSF_250'] = super_smoother(w_close, 250)
             
-            p_res, p_score = get_predictive_signal(stock, w_df)
+            # Predictive Logic using ONLY Awesome Oscillator
+            p_res, p_score = get_predictive_signal(stock)
             if p_res == "PREDICT_UP": predictive_up.append((stock, p_score))
             elif p_res == "PREDICT_DOWN": predictive_down.append((stock, p_score))
 
@@ -166,16 +148,17 @@ for stock in stocks:
                 sell_signals.append(stock)
     except: continue
 
-# --- SORTING ---
+# Sorting
 weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
 top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in weekly_buy_scored[5:]]
 monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
 top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
 
+# Predictive sorted by absolute value of AO
 predictive_up = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
 predictive_down = [x[0] for x in sorted(predictive_down, key=lambda x: x[1])]
 
-# --- SHEETS ---
+# Sheets
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
@@ -185,7 +168,7 @@ update_sheet("Sell_Signals", sell_signals)
 update_sheet("Predictive_UP", predictive_up)
 update_sheet("Predictive_DOWN", predictive_down)
 
-# --- TELEGRAM FORMATTING ---
+# Telegram Formatting
 msg1 = f"""🚀 ORIGINAL STRATEGY OUTPUTS
 
 Top Weekly Buy:
@@ -216,7 +199,7 @@ Predictive DOWN:
 
 send_telegram_message(msg1)
 send_telegram_message(msg2)
-print("Finished.")
+print("Process finished successfully.")
 
 
 
