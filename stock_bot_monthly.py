@@ -89,9 +89,9 @@ def get_predictive_signal(stock_symbol):
         
         composite_score = cmf_pts + rsi_pts + macd_pts + adx_pts
         
-        if composite_score >= 60:
+        if composite_score >= 15:
             return "PREDICT_UP", composite_score
-        elif composite_score <= -60:
+        elif composite_score <= -15:
             return "PREDICT_DOWN", composite_score
         return "HOLD", 0
     except:
