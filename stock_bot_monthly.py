@@ -53,7 +53,7 @@ def rolling_setup_weekly(df, lookback):
             return True
     return False
 
-# --- PREDICTIVE ENGINE (ONLY AWESOME OSCILLATOR) ---
+# --- THE "BEST" PREDICTIVE ENGINE: SQUEEZE + AO ---
 def get_predictive_signal(stock_symbol):
     try:
         tv_symbol = stock_symbol.replace(".NS", "")
@@ -61,15 +61,26 @@ def get_predictive_signal(stock_symbol):
         analysis = handler.get_analysis()
         ind = analysis.indicators
         
-        # Pull Awesome Oscillator directly from TradingView
+        # 1. Fetching Squeeze & Momentum Data
         ao = ind.get("AO")
+        bb_upper = ind.get("BB.upper")
+        bb_lower = ind.get("BB.lower")
+        bb_basis = ind.get("BB.basis")
         
-        if ao is not None:
-            if ao > 0:
-                return "PREDICT_UP", ao
-            elif ao < 0:
-                return "PREDICT_DOWN", ao
-                
+        if all(v is not None for v in [ao, bb_upper, bb_lower, bb_basis]):
+            # Calculate Bandwidth (Energy level)
+            bandwidth = (bb_upper - bb_lower) / bb_basis
+            
+            # THE CORE LOGIC:
+            # A narrow bandwidth (< 0.1) means a massive move is loading.
+            # AO tells us which way the 'leak' is starting.
+            
+            if bandwidth < 0.12: # The Squeeze is on
+                if ao > 0:
+                    return "PREDICT_UP", (1/bandwidth) * ao # Score increases as squeeze tightens
+                elif ao < 0:
+                    return "PREDICT_DOWN", (1/bandwidth) * abs(ao)
+                    
         return "HOLD", 0
     except:
         return "HOLD", 0
@@ -100,7 +111,7 @@ weekly_sell_signals, sell_signals = [], []
 predictive_up, predictive_down = [], []
 
 for stock in stocks:
-    print(f"Processing {stock}...")
+    print(f"Scanning {stock}...")
     try:
         ticker = yf.Ticker(stock)
         now = datetime.now()
@@ -115,7 +126,6 @@ for stock in stocks:
             w_df['SSF_200'] = super_smoother(w_close, 200)
             w_df['SSF_250'] = super_smoother(w_close, 250)
             
-            # Predictive Logic using ONLY Awesome Oscillator
             p_res, p_score = get_predictive_signal(stock)
             if p_res == "PREDICT_UP": predictive_up.append((stock, p_score))
             elif p_res == "PREDICT_DOWN": predictive_down.append((stock, p_score))
@@ -148,17 +158,15 @@ for stock in stocks:
                 sell_signals.append(stock)
     except: continue
 
-# Sorting
+# --- OUTPUT PROCESSING ---
 weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
 top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in weekly_buy_scored[5:]]
 monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
 top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
 
-# Predictive sorted by absolute value of AO
 predictive_up = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
-predictive_down = [x[0] for x in sorted(predictive_down, key=lambda x: x[1])]
+predictive_down = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
 
-# Sheets
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
@@ -168,7 +176,6 @@ update_sheet("Sell_Signals", sell_signals)
 update_sheet("Predictive_UP", predictive_up)
 update_sheet("Predictive_DOWN", predictive_down)
 
-# Telegram Formatting
 msg1 = f"""🚀 ORIGINAL STRATEGY OUTPUTS
 
 Top Weekly Buy:
@@ -189,7 +196,7 @@ Weekly Sell:
 Monthly Sell:
 {sell_signals}"""
 
-msg2 = f"""🔮 PREDICTIVE QUANT
+msg2 = f"""🔮 PREDICTIVE QUANT (SQUEEZE ENGINE)
 
 Predictive UP:
 {predictive_up[:15]}
@@ -199,7 +206,7 @@ Predictive DOWN:
 
 send_telegram_message(msg1)
 send_telegram_message(msg2)
-print("Process finished successfully.")
+print("Scan Complete.")
 
 
 
