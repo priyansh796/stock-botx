@@ -3,68 +3,46 @@ import pandas as pd
 import numpy as np
 import gspread
 from google.oauth2.service_account import Credentials
-from ta.volume import ChaikinMoneyFlowIndicator
 from tradingview_ta import TA_Handler, Interval
+from ta.momentum import AwesomeOscillatorIndicator
+from ta.volatility import BollingerBands
 import time
-import random # Added for jitter
 
 # --- SETTINGS ---
 SPREADSHEET_NAME = "Stock Bot Dashboard" 
-TEST_LIMIT = 100 
+TEST_LIMIT = 10 
 
-def fetch_tv_data_stealth(stock_symbol, retries=2):
-    """Fetches TV data with randomized delays and retries."""
-    tv_symbol = stock_symbol.split('.')[0]
-    for attempt in range(retries):
-        try:
-            handler = TA_Handler(
-                symbol=tv_symbol,
-                exchange="NSE",
-                screener="india",
-                interval=Interval.INTERVAL_1_WEEK,
-                timeout=10 # Increased timeout
-            )
-            # This library doesn't easily support headers, so we rely on timing
-            analysis = handler.get_analysis()
-            if analysis and analysis.indicators:
-                return analysis.indicators
-        except Exception:
-            wait_time = 5 * (attempt + 1)
-            print(f" ! TV Throttled {stock_symbol}. Retrying in {wait_time}s...")
-            time.sleep(wait_time)
-    return None
-
-def process_audit(stock_symbol, local_df, tv_ind):
+def fetch_tv_values(symbol):
+    """Fetches raw numbers from TradingView."""
     try:
-        cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
-        cmf_val = cmf_func.chaikin_money_flow().iloc[-1]
-        
-        if tv_ind is None:
-            return ["N/A", "N/A", "N/A", "TV TIMEOUT"]
-
-        ao = tv_ind.get("AO")
-        bb_u, bb_l = tv_ind.get("BB.upper"), tv_ind.get("BB.lower")
-        bb_m = tv_ind.get("BB.basis") or tv_ind.get("SMA20") or local_df['Close'].rolling(20).mean().iloc[-1]
-
-        bandwidth = (bb_u - bb_l) / bb_m if all(v is not None for v in [bb_u, bb_l, bb_m]) else 0
-        
-        sq_label = "READY" if bandwidth < 0.18 else "LOOSE"
-        mo_label = "BULLISH" if (ao is not None and ao > 0) else "BEARISH"
-        inst_label = "BUYING" if cmf_val > 0.05 else ("EXITING" if cmf_val < -0.05 else "NEUTRAL")
-        
-        if bandwidth < 0.18 and ao > 0 and cmf_val > 0.05:
-            verdict = "⭐ EXCELLENT"
-        elif cmf_val < -0.07:
-            verdict = "⛔ DANGEROUS"
-        else:
-            verdict = "WATCH"
-
-        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.2f} ({mo_label})", f"{cmf_val:.4f} ({inst_label})", verdict]
+        tv_symbol = symbol.split('.')[0]
+        handler = TA_Handler(symbol=tv_symbol, exchange="NSE", screener="india", interval=Interval.INTERVAL_1_WEEK)
+        ind = handler.get_analysis().indicators
+        ao = ind.get("AO")
+        bb_u = ind.get("BB.upper")
+        bb_l = ind.get("BB.lower")
+        bb_m = ind.get("BB.basis") or ind.get("SMA20")
+        bw = (bb_u - bb_l) / bb_m if bb_m else 0
+        return ao, bw
     except:
-        return ["N/A", "N/A", "N/A", "ERROR"]
+        return None, None
+
+def fetch_yf_ta_values(df):
+    """Calculates numbers using YFinance data + TA Library."""
+    try:
+        # AO Calculation
+        ao_ins = AwesomeOscillatorIndicator(high=df['High'], low=df['Low'])
+        ao_val = ao_ins.awesome_oscillator().iloc[-1]
+        
+        # Bandwidth Calculation
+        bb_ins = BollingerBands(close=df['Close'])
+        bw_val = (bb_ins.bollinger_hband().iloc[-1] - bb_ins.bollinger_lband().iloc[-1]) / bb_ins.bollinger_mavg().iloc[-1]
+        
+        return ao_val, bw_val
+    except:
+        return None, None
 
 # --- EXECUTION ---
-print("Connecting to Google Sheets...")
 creds = Credentials.from_service_account_file("credentials.json", 
         scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
 client = gspread.authorize(creds)
@@ -73,28 +51,42 @@ sheet = client.open(SPREADSHEET_NAME).worksheet("Top_Weekly")
 stocks_df = pd.read_csv("nse_stocks.csv")
 stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().head(TEST_LIMIT).tolist()]
 
-print(f"🚀 Starting Stealth Test on {len(stocks)} stocks...")
-final_rows = [["Stock", "Volatility (Squeeze)", "Momentum (AO)", "Institutional (CMF)", "BOT VERDICT"]]
+print(f"🚀 Running Side-by-Side Comparison on {TEST_LIMIT} stocks...")
 
-for i, stock in enumerate(stocks):
-    print(f"[{i+1}/{TEST_LIMIT}] Scanning {stock}...")
+headers = [["Stock", "TV AO", "YF AO", "AO Diff", "TV Bandwidth", "YF Bandwidth", "BW Diff"]]
+rows = []
+
+for stock in stocks:
+    print(f"Comparing {stock}...")
     try:
+        # 1. Get TV Data
+        tv_ao, tv_bw = fetch_tv_values(stock)
+        
+        # 2. Get YF Data
         ticker = yf.Ticker(stock)
         hist = ticker.history(period="1y", interval="1wk")
+        yf_ao, yf_bw = fetch_yf_ta_values(hist)
         
-        if not hist.empty:
-            tv_data = fetch_tv_data_stealth(stock)
-            audit_row = process_audit(stock, hist, tv_data)
-            final_rows.append([stock] + audit_row)
-            
-            # Use Jitter: Random pause between 2.0 and 4.5 seconds
-            pause = random.uniform(2.0, 4.5)
-            time.sleep(pause)
-    except:
-        final_rows.append([stock, "N/A", "N/A", "N/A", "CRASHED"])
+        # 3. Calculate Differences
+        ao_diff = abs(tv_ao - yf_ao) if (tv_ao and yf_ao) else "N/A"
+        bw_diff = abs(tv_bw - yf_bw) if (tv_bw and yf_bw) else "N/A"
+        
+        rows.append([
+            stock, 
+            round(tv_ao, 2) if tv_ao else "TIMEOUT", 
+            round(yf_ao, 2) if yf_ao else "ERR",
+            round(ao_diff, 4) if isinstance(ao_diff, float) else "N/A",
+            round(tv_bw, 4) if tv_bw else "TIMEOUT",
+            round(yf_bw, 4) if yf_bw else "ERR",
+            round(bw_diff, 6) if isinstance(bw_diff, float) else "N/A"
+        ])
+        
+        time.sleep(2) # Extra delay to help TradingView stay connected
+    except Exception as e:
+        print(f"Error on {stock}: {e}")
 
 sheet.clear()
-sheet.update(final_rows)
-print("\n✅ STEALTH TEST COMPLETE. Check your sheet.")
+sheet.update(headers + rows)
+print("\n✅ COMPARISON COMPLETE. Check the 'Top_Weekly' sheet.")
 
 
