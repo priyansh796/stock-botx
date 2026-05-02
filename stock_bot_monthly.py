@@ -1,254 +1,95 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from ta.momentum import RSIIndicator
-from ta.volatility import BollingerBands
-from ta.volume import ChaikinMoneyFlowIndicator 
-import os
 import gspread
 from google.oauth2.service_account import Credentials
-import requests
-import time
-from datetime import datetime
+from ta.volume import ChaikinMoneyFlowIndicator
 from tradingview_ta import TA_Handler, Interval
+import time
 
 # --- SETTINGS ---
-MARKET_CAP_LIMIT = 5000 * 10**7
-MONTHLY_HISTORY = "15y"
-WEEKLY_HISTORY = "max"
-SPREADSHEET_NAME = "Stock Bot Dashboard"
-TELEGRAM_TOKEN = "8630503074:AAHgONEVwJB_QVZ1GeKBaVGl9Z3Ct0E_yLw"
-CHAT_ID = "8258280498"
+SPREADSHEET_NAME = "Stock Bot Dashboard" 
+TEST_LIMIT = 100  # Running on exactly 100 stocks
 
-# --- ORIGINAL FUNCTIONS ---
-def super_smoother(price, period):
-    a1 = np.exp(-1.414 * np.pi / period)
-    b1 = 2 * a1 * np.cos(1.414 * np.pi / period)
-    c2, c3 = b1, -a1 * a1
-    c1 = 1 - c2 - c3
-    filt = np.zeros(len(price))
-    for i in range(2, len(price)):
-        filt[i] = (c1 * (price[i] + price[i - 1]) / 2 + c2 * filt[i - 1] + c3 * filt[i - 2])
-    return filt
-
-def rolling_cross(close, ssf, lookback):
-    cross_found = False
-    for i in range(1, lookback):
-        if close[-i - 1] < ssf[-i - 1] and close[-i] > ssf[-i]:
-            cross_found = True
-            break
-    return True if (cross_found and close[-1] > ssf[-1]) else False
-
-def rolling_setup_monthly(df, lookback):
-    for i in range(1, lookback):
-        if (df['Close'].iloc[-i] < df['SSF_50'].iloc[-i] and 
-            df['Close'].iloc[-i] < df['SSF_200'].iloc[-i] and 
-            df['Close'].iloc[-i] < df['SSF_250'].iloc[-i]):
-            return True
-    return False
-
-def rolling_setup_weekly(df, lookback):
-    for i in range(1, lookback):
-        if (df['Close'].iloc[-i] < df['SSF_50'].iloc[-i] and 
-            df['Close'].iloc[-i] < df['SSF_100'].iloc[-i] and 
-            df['Close'].iloc[-i] < df['SSF_250'].iloc[-i]):
-            return True
-    return False
-
-# --- UPDATED AUDIT HELPER FUNCTION (WITH NONETYPE FALLBACK) ---
-def get_audit_data(stock_symbol, local_df):
+def fetch_tv_data(stock_symbol):
+    """Attempt to get TV indicators. Returns None if it fails/times out."""
     try:
-        cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
-        current_cmf = cmf_func.chaikin_money_flow().iloc[-1]
-        
-        tv_symbol = stock_symbol.replace(".NS", "")
+        tv_symbol = stock_symbol.split('.')[0]
         handler = TA_Handler(symbol=tv_symbol, exchange="NSE", screener="india", interval=Interval.INTERVAL_1_WEEK)
-        ind = handler.get_analysis().indicators
+        analysis = handler.get_analysis()
+        return analysis.indicators
+    except:
+        return None
+
+def process_audit(stock_symbol, local_df, tv_ind):
+    """Creates the readable output with labels."""
+    try:
+        # CMF Calculation
+        cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
+        cmf_val = cmf_func.chaikin_money_flow().iloc[-1]
         
-        ao = ind.get("AO")
-        bb_u, bb_l = ind.get("BB.upper"), ind.get("BB.lower")
-        
-        # FIXED: Multi-source hunt for Bollinger Basis to prevent N/A
-        bb_m = ind.get("BB.basis") or ind.get("SMA20") or ind.get("MA")
-        if bb_m is None:
-            bb_m = local_df['Close'].rolling(window=20).mean().iloc[-1]
+        if tv_ind is None:
+            return ["N/A", "N/A", "N/A", "TV TIMEOUT"]
+
+        ao = tv_ind.get("AO")
+        bb_u, bb_l = tv_ind.get("BB.upper"), tv_ind.get("BB.lower")
+        # Fallback for middle line
+        bb_m = tv_ind.get("BB.basis") or tv_ind.get("SMA20") or local_df['Close'].rolling(20).mean().iloc[-1]
 
         bandwidth = (bb_u - bb_l) / bb_m if all(v is not None for v in [bb_u, bb_l, bb_m]) else 0
         
-        # Recommendations for readability
+        # Labels for humans
         sq_label = "READY" if bandwidth < 0.18 else "LOOSE"
         mo_label = "BULLISH" if (ao is not None and ao > 0) else "BEARISH"
-        inst_label = "BUYING" if current_cmf > 0.05 else ("EXITING" if current_cmf < -0.05 else "NEUTRAL")
+        inst_label = "BUYING" if cmf_val > 0.05 else ("EXITING" if cmf_val < -0.05 else "NEUTRAL")
         
-        # Final Verdict Logic
-        if bandwidth < 0.18 and ao > 0 and current_cmf > 0.05:
+        # Verdict Logic
+        if bandwidth < 0.18 and ao > 0 and cmf_val > 0.05:
             verdict = "⭐ EXCELLENT"
-        elif current_cmf < -0.07:
+        elif cmf_val < -0.07:
             verdict = "⛔ DANGEROUS"
         else:
             verdict = "WATCH"
 
-        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.2f} ({mo_label})", f"{current_cmf:.4f} ({inst_label})", verdict]
-    except: return ["N/A", "N/A", "N/A", "ERROR"]
+        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.2f} ({mo_label})", f"{cmf_val:.4f} ({inst_label})", verdict]
+    except Exception as e:
+        return ["N/A", "N/A", "N/A", f"ERR: {str(e)[:5]}"]
 
-# --- OPTIMIZED PREDICTIVE ENGINE ---
-def get_predictive_signal(stock_symbol, local_df):
-    try:
-        cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
-        current_cmf = cmf_func.chaikin_money_flow().iloc[-1]
-        tv_symbol = stock_symbol.replace(".NS", "")
-        handler = TA_Handler(symbol=tv_symbol, exchange="NSE", screener="india", interval=Interval.INTERVAL_1_WEEK)
-        ind = handler.get_analysis().indicators
-        ao, bb_u, bb_l = ind.get("AO"), ind.get("BB.upper"), ind.get("BB.lower")
-        
-        bb_m = ind.get("BB.basis") or ind.get("SMA20") or ind.get("MA")
-        if bb_m is None:
-            bb_m = local_df['Close'].rolling(window=20).mean().iloc[-1]
-
-        if all(v is not None for v in [ao, bb_u, bb_l, bb_m]):
-            bandwidth = (bb_u - bb_l) / bb_m
-            up_score = (1 if bandwidth < 0.18 else 0) + (1 if ao > 0 else 0) + (1 if current_cmf > 0.05 else 0)
-            down_score = (1 if bandwidth < 0.18 else 0) + (1 if ao < 0 else 0) + (1 if current_cmf < -0.05 else 0)
-            
-            if up_score >= 2:
-                return "PREDICT_UP", (up_score * 100) + ((1/bandwidth) * ao)
-            if down_score >= 2:
-                return "PREDICT_DOWN", (down_score * 100) + ((1/bandwidth) * abs(ao))
-        return "HOLD", 0
-    except: return "HOLD", 0
-
-def send_telegram_message(message):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-    except: pass
-
-# --- MAIN ENGINE ---
-creds = Credentials.from_service_account_file("credentials.json", scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
+# --- EXECUTION ---
+print("Authenticating with Google...")
+creds = Credentials.from_service_account_file("credentials.json", 
+        scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
 client = gspread.authorize(creds)
-spreadsheet = client.open(SPREADSHEET_NAME)
+sheet = client.open(SPREADSHEET_NAME).worksheet("Top_Weekly")
 
-def update_sheet(sheet_name, data_list):
-    try: sheet = spreadsheet.worksheet(sheet_name)
-    except: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
-    sheet.clear()
-    headers = [["Stock", "Volatility (Squeeze)", "Momentum (AO)", "Institutional (CMF)", "BOT VERDICT"]]
-    rows = []
-    if not data_list:
-        sheet.update([["No Stocks"]])
-        return
-    for stock in data_list:
-        ticker = yf.Ticker(stock)
-        df = ticker.history(period="1y", interval="1wk")
-        audit = get_audit_data(stock, df)
-        rows.append([stock] + audit)
-        time.sleep(1) # CRITICAL: Stabilizes API connection
-    sheet.update(headers + rows)
-
+# Load 100 stocks
 stocks_df = pd.read_csv("nse_stocks.csv")
-stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
+stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().head(TEST_LIMIT).tolist()]
 
-weekly_buy_scored, monthly_buy_scored = [], []
-weekly_sell_signals, sell_signals = [], []
-predictive_up, predictive_down = [], []
+print(f"🚀 Starting Test on {len(stocks)} stocks...")
+final_rows = [["Stock", "Volatility (Squeeze)", "Momentum (AO)", "Institutional (CMF)", "BOT VERDICT"]]
 
-for stock in stocks:
-    print(f"Scanning {stock}...")
+for i, stock in enumerate(stocks):
+    print(f"[{i+1}/{TEST_LIMIT}] Processing {stock}...", end="\r")
     try:
         ticker = yf.Ticker(stock)
-        now = datetime.now()
-        raw_w = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
-        w_df = raw_w.copy() if (now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16)) else raw_w.iloc[:-1].copy()
-
-        if len(w_df) >= 300:
-            w_close = w_df['Close'].values
-            w_df['SSF_20'] = super_smoother(w_close, 20)
-            w_df['SSF_50'] = super_smoother(w_close, 50)
-            w_df['SSF_100'] = super_smoother(w_close, 100)
-            w_df['SSF_200'] = super_smoother(w_close, 200)
-            w_df['SSF_250'] = super_smoother(w_close, 250)
+        hist = ticker.history(period="1y", interval="1wk")
+        
+        if not hist.empty:
+            # Step 1: Call TradingView once
+            tv_data = fetch_tv_data(stock)
+            # Step 2: Generate readable audit
+            audit_row = process_audit(stock, hist, tv_data)
+            final_rows.append([stock] + audit_row)
             
-            p_res, p_rank = get_predictive_signal(stock, w_df)
-            if p_res == "PREDICT_UP": predictive_up.append((stock, p_rank))
-            elif p_res == "PREDICT_DOWN": predictive_down.append((stock, p_rank))
+            # Step 3: Stability Pause
+            time.sleep(1.2) 
+    except:
+        final_rows.append([stock, "ERROR", "ERROR", "ERROR", "CRASHED"])
 
-            rsi_w = RSIIndicator(w_df['Close'], window=14).rsi()
-            rsi_ma_w = rsi_w.rolling(14).mean()
-            if (rolling_setup_weekly(w_df, 20) and rolling_cross(w_close, w_df['SSF_50'].values, 6) and 
-                rsi_w.iloc[-1] > rsi_ma_w.iloc[-1] and w_df['SSF_50'].iloc[-1] < w_df['SSF_200'].iloc[-1]):
-                
-                info = ticker.info
-                if info.get("marketCap", 0) >= MARKET_CAP_LIMIT and info.get("profitMargins", 0) > 0:
-                    score = rsi_w.iloc[-1] + ((w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]) * 100
-                    weekly_buy_scored.append((stock, score))
-
-            if len(w_df) >= 2:
-                prev_h = (w_df['Close'].iloc[-2] > w_df['SSF_20'].iloc[-2] and w_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
-                if prev_h and w_df['Close'].iloc[-1] < w_df['SSF_20'].iloc[-1]:
-                    weekly_sell_signals.append(stock)
-
-        raw_m = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
-        m_df = raw_m.iloc[:-1].copy()
-        if len(m_df) >= 80:
-            m_close = m_df['Close'].values
-            m_df['SSF_20'] = super_smoother(m_close, 20)
-            m_df['SSF_50'] = super_smoother(m_close, 50)
-            if rolling_setup_monthly(m_df, 12) and rolling_cross(m_close, m_df['SSF_50'].values, 3):
-                score_m = 50 + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
-                monthly_buy_scored.append((stock, score_m))
-            if m_close[-2] > m_df['SSF_20'].iloc[-2] and m_close[-1] < m_df['SSF_20'].iloc[-1]:
-                sell_signals.append(stock)
-    except: continue
-
-# --- OUTPUT PROCESSING ---
-weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
-top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in weekly_buy_scored[5:]]
-monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
-top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
-predictive_up = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
-predictive_down = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
-
-# Update Sheets
-update_sheet("Top_Weekly", top_weekly)
-update_sheet("Rest_Weekly", rest_weekly)
-update_sheet("Top_Monthly", top_monthly)
-update_sheet("Rest_Monthly", rest_monthly)
-update_sheet("Weekly_Sell", weekly_sell_signals)
-update_sheet("Sell_Signals", sell_signals)
-update_sheet("Predictive_UP", predictive_up)
-update_sheet("Predictive_DOWN", predictive_down)
-
-# RESTORED ORIGINAL TELEGRAM FORMAT
-msg1 = f"""🚀 ORIGINAL STRATEGY OUTPUTS
-
-Top Weekly Buy:
-{top_weekly}
-
-Rest Weekly Buy:
-{rest_weekly}
-
-Top Monthly Buy:
-{top_monthly}
-
-Rest Monthly Buy:
-{rest_monthly}
-
-Weekly Sell:
-{weekly_sell_signals}
-
-Monthly Sell:
-{sell_signals}"""
-
-msg2 = f"""🔮 PREDICTIVE QUANT
-
-Predictive UP:
-{predictive_up[:15]}
-
-Predictive DOWN:
-{predictive_down[:15]}"""
-
-send_telegram_message(msg1)
-send_telegram_message(msg2)
-print("Process Complete.")
+# Update the Sheet
+sheet.clear()
+sheet.update(final_rows)
+print("\n\n✅ TEST COMPLETE. Open your 'Top_Weekly' tab in Google Sheets to see results.")
 
 
