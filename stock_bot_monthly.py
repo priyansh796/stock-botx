@@ -1,65 +1,54 @@
 from tradingview_ta import TA_Handler, Interval
-import sys
+import time
 
-def debug_stock(stock_symbol):
-    print(f"--- DEBUGGING: {stock_symbol} ---")
+def debug_cmf_value(stock_symbol):
+    print(f"--- STARTING CMF DEBUG FOR: {stock_symbol} ---")
     try:
-        # Standardize symbol for TradingView
         tv_symbol = stock_symbol.replace(".NS", "")
-        print(f"Targeting TV Symbol: {tv_symbol} on NSE exchange")
         
-        handler = TA_Handler(
-            symbol=tv_symbol,
-            exchange="NSE",
-            screener="india",
-            interval=Interval.INTERVAL_1_WEEK
-        )
+        # We will try to fetch 1-Week and 1-Day intervals to see if one is missing data
+        intervals = [Interval.INTERVAL_1_WEEK, Interval.INTERVAL_1_DAY]
         
-        analysis = handler.get_analysis()
-        ind = analysis.indicators
-        
-        # Capture raw values
-        cmf = ind.get("Chaikin Money Flow")
-        rsi = ind.get("RSI")
-        macd = ind.get("MACD.macd")
-        signal = ind.get("MACD.signal")
-        adx = ind.get("ADX")
-        
-        print(f"\nRAW VALUES FROM TRADINGVIEW:")
-        print(f"CMF: {cmf}")
-        print(f"RSI: {rsi}")
-        print(f"MACD: {macd}")
-        print(f"MACD Signal: {signal}")
-        print(f"ADX: {adx}")
+        for timeframe in intervals:
+            print(f"\nChecking Timeframe: {timeframe}")
+            handler = TA_Handler(
+                symbol=tv_symbol,
+                exchange="NSE",
+                screener="india",
+                interval=timeframe
+            )
+            
+            analysis = handler.get_analysis()
+            ind = analysis.indicators
+            
+            # 1. Check if the key exists at all
+            if "Chaikin Money Flow" in ind:
+                val = ind["Chaikin Money Flow"]
+                print(f"SUCCESS: 'Chaikin Money Flow' key found.")
+                print(f"VALUE: {val}")
+                if val is None:
+                    print("ISSUE: Value is None (TradingView has no CMF data for this stock right now).")
+            else:
+                print("ISSUE: The key 'Chaikin Money Flow' does not exist in the indicator list.")
+                # Print all available keys to see if it's named something else
+                print("Available keys related to Money Flow:")
+                mf_keys = [k for k in ind.keys() if "Flow" in k or "MF" in k or "Chaikin" in k]
+                print(mf_keys if mf_keys else "None found.")
 
-        # Calculate score points based on your logic
-        cmf_pts = 40 if (cmf and cmf > 0.1) else (-40 if (cmf and cmf < -0.05) else 0)
-        rsi_pts = 20 if (rsi and rsi > 60) else (-20 if (rsi and rsi < 40) else 0)
-        macd_pts = 20 if (macd and signal and (macd - signal) > 0) else -20
-        adx_pts = 20 if (adx and adx > 25) else 0
-        
-        total_score = cmf_pts + rsi_pts + macd_pts + adx_pts
-        
-        print("\n--- SCORE BREAKDOWN ---")
-        print(f"CMF Points:  {cmf_pts}")
-        print(f"RSI Points:  {rsi_pts}")
-        print(f"MACD Points: {macd_pts}")
-        print(f"ADX Points:  {adx_pts}")
-        print(f"TOTAL SCORE: {total_score}")
-        
-        if total_score >= 15:
-            print("\nRESULT: This stock SHOULD appear in PREDICT_UP list.")
-        elif total_score <= -15:
-            print("\nRESULT: This stock SHOULD appear in PREDICT_DOWN list.")
-        else:
-            print("\nRESULT: Stock is in HOLD/NEUTRAL zone (Score between -15 and 15).")
+            # 2. Check Volume (CMF requires Volume to calculate)
+            vol = ind.get("volume")
+            print(f"Current Volume reported by TV: {vol}")
+            if vol is None or vol == 0:
+                print("ALERT: Volume is 0 or None. CMF cannot be calculated without volume data.")
 
     except Exception as e:
-        print(f"CRITICAL ERROR: {str(e)}")
+        print(f"CRITICAL ERROR during debug: {e}")
 
 if __name__ == '__main__':
-    # Checking MIDHANI (Mishra Dhatu Nigam Limited)
-    debug_stock("MIDHANI.NS")
+    # We check MIDHANI and one major stock like RELIANCE for comparison
+    debug_cmf_value("MIDHANI.NS")
+    print("\n" + "="*30 + "\n")
+    debug_cmf_value("RELIANCE.NS")
 
 
 
