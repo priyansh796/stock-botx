@@ -54,50 +54,48 @@ def rolling_setup_weekly(df, lookback):
             return True
     return False
 
-# --- OPTIMIZED PREDICTIVE ENGINE (WITH CMF & WEIGHTED SCORING) ---
-def get_predictive_signal(stock_symbol, local_df):
+# --- AUDIT HELPER FUNCTION ---
+def get_audit_data(stock_symbol, local_df):
     try:
-        # 1. Institutional Activity Calculation
-        cmf_func = ChaikinMoneyFlowIndicator(
-            high=local_df['High'], low=local_df['Low'], 
-            close=local_df['Close'], volume=local_df['Volume'], window=20
-        )
+        cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
         current_cmf = cmf_func.chaikin_money_flow().iloc[-1]
-
-        # 2. Volatility & Momentum Fetch
         tv_symbol = stock_symbol.replace(".NS", "")
         handler = TA_Handler(symbol=tv_symbol, exchange="NSE", screener="india", interval=Interval.INTERVAL_1_WEEK)
         ind = handler.get_analysis().indicators
-        
         ao = ind.get("AO")
         bb_u, bb_l = ind.get("BB.upper"), ind.get("BB.lower")
         bb_m = ind.get("BB.basis") or ind.get("SMA20") or local_df['SSF_20'].iloc[-1]
-        
+        bandwidth = (bb_u - bb_l) / bb_m if all(v is not None for v in [bb_u, bb_l, bb_m]) else 0
+        return [f"{bandwidth:.4f}", f"{ao:.2f}", f"{current_cmf:.4f}"]
+    except: return ["N/A", "N/A", "N/A"]
+
+# --- OPTIMIZED PREDICTIVE ENGINE ---
+def get_predictive_signal(stock_symbol, local_df):
+    try:
+        cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
+        current_cmf = cmf_func.chaikin_money_flow().iloc[-1]
+        tv_symbol = stock_symbol.replace(".NS", "")
+        handler = TA_Handler(symbol=tv_symbol, exchange="NSE", screener="india", interval=Interval.INTERVAL_1_WEEK)
+        ind = handler.get_analysis().indicators
+        ao = ind.get("AO")
+        bb_u, bb_l = ind.get("BB.upper"), ind.get("BB.lower")
+        bb_m = ind.get("BB.basis") or ind.get("SMA20") or local_df['SSF_20'].iloc[-1]
         if all(v is not None for v in [ao, bb_u, bb_l, bb_m]):
             bandwidth = (bb_u - bb_l) / bb_m
-            
-            # --- WEIGHTED SCORING ---
             up_score = 0
-            if bandwidth < 0.18: up_score += 1      # Squeeze Point
-            if ao > 0: up_score += 1               # Momentum Point
-            if current_cmf > 0.05: up_score += 1   # Institutional Point
-            
+            if bandwidth < 0.18: up_score += 1
+            if ao > 0: up_score += 1
+            if current_cmf > 0.05: up_score += 1
             down_score = 0
             if bandwidth < 0.18: down_score += 1
             if ao < 0: down_score += 1
             if current_cmf < -0.05: down_score += 1
-
             if up_score >= 2:
-                final_rank = (up_score * 100) + ((1/bandwidth) * ao)
-                return "PREDICT_UP", final_rank
-            
+                return "PREDICT_UP", (up_score * 100) + ((1/bandwidth) * ao)
             if down_score >= 2:
-                final_rank = (down_score * 100) + ((1/bandwidth) * abs(ao))
-                return "PREDICT_DOWN", final_rank
-                    
+                return "PREDICT_DOWN", (down_score * 100) + ((1/bandwidth) * abs(ao))
         return "HOLD", 0
-    except:
-        return "HOLD", 0
+    except: return "HOLD", 0
 
 def send_telegram_message(message):
     try:
@@ -110,12 +108,22 @@ creds = Credentials.from_service_account_file("credentials.json", scopes=["https
 client = gspread.authorize(creds)
 spreadsheet = client.open(SPREADSHEET_NAME)
 
-def update_sheet(sheet_name, data):
+# UPDATED: update_sheet now includes Audit Data
+def update_sheet(sheet_name, data_list):
     try: sheet = spreadsheet.worksheet(sheet_name)
-    except: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=5)
+    except: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
     sheet.clear()
-    if not data: sheet.update([["No Stocks"]])
-    else: sheet.update([["Stock"]] + [[x] for x in data])
+    headers = [["Stock", "Bandwidth", "Awesome Osc", "CMF"]]
+    rows = []
+    if not data_list:
+        sheet.update([["No Stocks"]])
+        return
+    for stock in data_list:
+        ticker = yf.Ticker(stock)
+        df = ticker.history(period="1y", interval="1wk")
+        audit = get_audit_data(stock, df)
+        rows.append([stock] + audit)
+    sheet.update(headers + rows)
 
 stocks_df = pd.read_csv("nse_stocks.csv")
 stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
@@ -140,12 +148,10 @@ for stock in stocks:
             w_df['SSF_200'] = super_smoother(w_close, 200)
             w_df['SSF_250'] = super_smoother(w_close, 250)
             
-            # Predictive Logic Call
             p_res, p_rank = get_predictive_signal(stock, w_df)
             if p_res == "PREDICT_UP": predictive_up.append((stock, p_rank))
             elif p_res == "PREDICT_DOWN": predictive_down.append((stock, p_rank))
 
-            # Original Weekly Strategy
             rsi_w = RSIIndicator(w_df['Close'], window=14).rsi()
             rsi_ma_w = rsi_w.rolling(14).mean()
             if (rolling_setup_weekly(w_df, 20) and rolling_cross(w_close, w_df['SSF_50'].values, 6) and 
@@ -161,7 +167,6 @@ for stock in stocks:
                 if prev_h and w_df['Close'].iloc[-1] < w_df['SSF_20'].iloc[-1]:
                     weekly_sell_signals.append(stock)
 
-        # Original Monthly Strategy
         raw_m = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
         m_df = raw_m.iloc[:-1].copy()
         if len(m_df) >= 80:
@@ -175,15 +180,15 @@ for stock in stocks:
                 sell_signals.append(stock)
     except: continue
 
-# --- OUTPUT PROCESSING (RESORED ORIGINAL ORDER) ---
+# --- OUTPUT PROCESSING ---
 weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
 top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in weekly_buy_scored[5:]]
 monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
 top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
-
 predictive_up = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
 predictive_down = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
 
+# Update Sheets with Audit Logic
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
@@ -193,7 +198,7 @@ update_sheet("Sell_Signals", sell_signals)
 update_sheet("Predictive_UP", predictive_up)
 update_sheet("Predictive_DOWN", predictive_down)
 
-# RESTORED ORIGINAL MESSAGE FORMAT
+# RESTORED ORIGINAL TELEGRAM FORMAT
 msg1 = f"""🚀 ORIGINAL STRATEGY OUTPUTS
 
 Top Weekly Buy:
