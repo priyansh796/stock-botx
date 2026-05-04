@@ -54,22 +54,30 @@ def rolling_setup_weekly(df, lookback):
             return True
     return False
 
-# --- UPDATED AUDIT HELPER (USING TA LIBRARY - NO TRADINGVIEW) ---
+# --- UPDATED AUDIT HELPER (FIXED FOR NaN) ---
 def get_audit_data(stock_symbol, local_df):
     try:
+        # Filter out empty rows to prevent NaN in calculations
+        local_df = local_df.dropna(subset=['Close', 'High', 'Low'])
+        
         # 1. CMF
-        cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
-        current_cmf = cmf_func.chaikin_money_flow().iloc[-1]
+        cmf_series = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20).chaikin_money_flow()
+        current_cmf = cmf_series.iloc[-1] if not np.isnan(cmf_series.iloc[-1]) else cmf_series.iloc[-2]
         
-        # 2. Awesome Oscillator (Local Extract)
-        ao_func = AwesomeOscillatorIndicator(high=local_df['High'], low=local_df['Low'])
-        ao = ao_func.awesome_oscillator().iloc[-1]
+        # 2. Awesome Oscillator
+        ao_series = AwesomeOscillatorIndicator(high=local_df['High'], low=local_df['Low']).awesome_oscillator()
+        ao = ao_series.iloc[-1] if not np.isnan(ao_series.iloc[-1]) else ao_series.iloc[-2]
         
-        # 3. Bollinger Bandwidth (Local Extract)
+        # 3. Bollinger Bandwidth
         bb = BollingerBands(close=local_df['Close'])
-        bb_u, bb_l, bb_m = bb.bollinger_hband().iloc[-1], bb.bollinger_lband().iloc[-1], bb.bollinger_mavg().iloc[-1]
-        bandwidth = (bb_u - bb_l) / bb_m if bb_m != 0 else 0
+        bw_series = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
+        bandwidth = bw_series.iloc[-1] if not np.isnan(bw_series.iloc[-1]) else bw_series.iloc[-2]
         
+        # Final safety to ensure no NaN is passed to labels
+        bandwidth = 0.0 if np.isnan(bandwidth) else bandwidth
+        ao = 0.0 if np.isnan(ao) else ao
+        current_cmf = 0.0 if np.isnan(current_cmf) else current_cmf
+
         # Recommendations for readability
         sq_label = "READY" if bandwidth < 0.18 else "LOOSE"
         mo_label = "BULLISH" if ao > 0 else "BEARISH"
@@ -86,21 +94,24 @@ def get_audit_data(stock_symbol, local_df):
         return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.2f} ({mo_label})", f"{current_cmf:.4f} ({inst_label})", verdict]
     except: return ["N/A", "N/A", "N/A", "ERROR"]
 
-# --- PREDICTIVE ENGINE ---
+# --- PREDICTIVE ENGINE (FIXED FOR NaN) ---
 def get_predictive_signal(stock_symbol, local_df):
     try:
+        local_df = local_df.dropna(subset=['Close'])
         # CMF
-        cmf_func = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20)
-        current_cmf = cmf_func.chaikin_money_flow().iloc[-1]
+        cmf_s = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20).chaikin_money_flow()
+        current_cmf = cmf_s.iloc[-1] if not np.isnan(cmf_s.iloc[-1]) else cmf_s.iloc[-2]
         
         # AO
-        ao_func = AwesomeOscillatorIndicator(high=local_df['High'], low=local_df['Low'])
-        ao = ao_func.awesome_oscillator().iloc[-1]
+        ao_s = AwesomeOscillatorIndicator(high=local_df['High'], low=local_df['Low']).awesome_oscillator()
+        ao = ao_s.iloc[-1] if not np.isnan(ao_s.iloc[-1]) else ao_s.iloc[-2]
         
         # BB Bandwidth
         bb = BollingerBands(close=local_df['Close'])
-        bb_u, bb_l, bb_m = bb.bollinger_hband().iloc[-1], bb.bollinger_lband().iloc[-1], bb.bollinger_mavg().iloc[-1]
-        bandwidth = (bb_u - bb_l) / bb_m if bb_m != 0 else 1.0 # Default high to prevent false signal
+        bw_s = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
+        bandwidth = bw_s.iloc[-1] if not np.isnan(bw_s.iloc[-1]) else bw_s.iloc[-2]
+
+        if np.isnan(ao) or np.isnan(bandwidth) or np.isnan(current_cmf): return "HOLD", 0
 
         up_score = 0
         if bandwidth < 0.18: up_score += 1
@@ -113,9 +124,9 @@ def get_predictive_signal(stock_symbol, local_df):
         if current_cmf < -0.05: down_score += 1
         
         if up_score >= 2:
-            return "PREDICT_UP", (up_score * 100) + ((1/bandwidth) * ao)
+            return "PREDICT_UP", (up_score * 100) + ((1/max(bandwidth, 0.001)) * ao)
         if down_score >= 2:
-            return "PREDICT_DOWN", (down_score * 100) + ((1/bandwidth) * abs(ao))
+            return "PREDICT_DOWN", (down_score * 100) + ((1/max(bandwidth, 0.001)) * abs(ao))
             
         return "HOLD", 0
     except: return "HOLD", 0
@@ -230,5 +241,6 @@ send_telegram_message(msg1)
 send_telegram_message(msg2)
 
 print("Process Complete.")
+
 
 
