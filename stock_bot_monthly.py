@@ -132,9 +132,11 @@ def update_sheet(sheet_name, data_list):
     
     prev_rows = sheet.get_all_values()
     history = {}
+    
+    # SAFETY CHECK: Ensure row has enough columns before indexing
     if len(prev_rows) > 1:
         for idx, row in enumerate(prev_rows[1:], start=1):
-            if row[0]:
+            if len(row) >= 4 and row[0]: 
                 history[row[0]] = {"rank": idx, "bw": clean_val(row[1]), "ao": clean_val(row[2]), "cmf": clean_val(row[3])}
 
     sheet.clear()
@@ -142,7 +144,7 @@ def update_sheet(sheet_name, data_list):
     rows = []
     
     if not data_list:
-        sheet.update('A1', [["No Stocks"]])
+        sheet.update(range_name='A1', values=[["No Stocks"]])
         return
 
     for current_rank, stock in enumerate(data_list, start=1):
@@ -168,7 +170,8 @@ def update_sheet(sheet_name, data_list):
             ])
         time.sleep(0.5)
     
-    sheet.update('A1', headers + rows)
+    # FIXED: Added range_name= and values= to avoid DeprecationWarning
+    sheet.update(range_name='A1', values=(headers + rows))
 
 def simple_update(sheet_name, data_list):
     try: sheet = spreadsheet.worksheet(sheet_name)
@@ -176,7 +179,7 @@ def simple_update(sheet_name, data_list):
     sheet.clear()
     headers = [["Stock"]]
     rows = [[s] for s in data_list]
-    sheet.update('A1', headers + rows)
+    sheet.update(range_name='A1', values=(headers + rows))
 
 # --- EXECUTION ---
 stocks_df = pd.read_csv("nse_stocks.csv")
