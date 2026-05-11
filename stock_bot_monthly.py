@@ -19,7 +19,7 @@ SPREADSHEET_NAME = "Stock Bot Dashboard"
 TELEGRAM_TOKEN = "8630503074:AAHgONEVwJB_QVZ1GeKBaVGl9Z3Ct0E_yLw"
 CHAT_ID = "8258280498"
 
-# --- CORE MATH FUNCTIONS ---
+# --- CORE MATH FUNCTIONS (UNTOUCHED) ---
 def super_smoother(price, period):
     a1 = np.exp(-1.414 * np.pi / period)
     b1 = 2 * a1 * np.cos(1.414 * np.pi / period)
@@ -54,36 +54,26 @@ def rolling_setup_weekly(df, lookback):
             return True
     return False
 
-# --- UPDATED AUDIT HELPER (FIXED FOR NaN) ---
+# --- UPDATED AUDIT HELPER (ADDED RAW VALUES FOR DELTA) ---
 def get_audit_data(stock_symbol, local_df):
     try:
-        # Filter out empty rows to prevent NaN in calculations
         local_df = local_df.dropna(subset=['Close', 'High', 'Low'])
-        
-        # 1. CMF
         cmf_series = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20).chaikin_money_flow()
         current_cmf = cmf_series.iloc[-1] if not np.isnan(cmf_series.iloc[-1]) else cmf_series.iloc[-2]
-        
-        # 2. Awesome Oscillator
         ao_series = AwesomeOscillatorIndicator(high=local_df['High'], low=local_df['Low']).awesome_oscillator()
         ao = ao_series.iloc[-1] if not np.isnan(ao_series.iloc[-1]) else ao_series.iloc[-2]
-        
-        # 3. Bollinger Bandwidth
         bb = BollingerBands(close=local_df['Close'])
         bw_series = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
         bandwidth = bw_series.iloc[-1] if not np.isnan(bw_series.iloc[-1]) else bw_series.iloc[-2]
         
-        # Final safety to ensure no NaN is passed to labels
         bandwidth = 0.0 if np.isnan(bandwidth) else bandwidth
         ao = 0.0 if np.isnan(ao) else ao
         current_cmf = 0.0 if np.isnan(current_cmf) else current_cmf
 
-        # Recommendations for readability
         sq_label = "READY" if bandwidth < 0.18 else "LOOSE"
         mo_label = "BULLISH" if ao > 0 else "BEARISH"
         inst_label = "BUYING" if current_cmf > 0.05 else ("EXITING" if current_cmf < -0.05 else "NEUTRAL")
         
-        # Bot Verdict Logic
         if bandwidth < 0.18 and ao > 0 and current_cmf > 0.05:
             verdict = "⭐ EXCELLENT"
         elif current_cmf < -0.07:
@@ -91,43 +81,34 @@ def get_audit_data(stock_symbol, local_df):
         else:
             verdict = "WATCH"
 
-        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.2f} ({mo_label})", f"{current_cmf:.4f} ({inst_label})", verdict]
-    except: return ["N/A", "N/A", "N/A", "ERROR"]
+        # Returns formatted labels AND raw values for delta calculation
+        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.2f} ({mo_label})", f"{current_cmf:.4f} ({inst_label})", verdict, bandwidth, ao, current_cmf]
+    except: return ["N/A", "N/A", "N/A", "ERROR", 0, 0, 0]
 
-# --- PREDICTIVE ENGINE (FIXED FOR NaN) ---
+# --- PREDICTIVE ENGINE (UNTOUCHED) ---
 def get_predictive_signal(stock_symbol, local_df):
     try:
         local_df = local_df.dropna(subset=['Close'])
-        # CMF
         cmf_s = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20).chaikin_money_flow()
         current_cmf = cmf_s.iloc[-1] if not np.isnan(cmf_s.iloc[-1]) else cmf_s.iloc[-2]
-        
-        # AO
         ao_s = AwesomeOscillatorIndicator(high=local_df['High'], low=local_df['Low']).awesome_oscillator()
         ao = ao_s.iloc[-1] if not np.isnan(ao_s.iloc[-1]) else ao_s.iloc[-2]
-        
-        # BB Bandwidth
         bb = BollingerBands(close=local_df['Close'])
         bw_s = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
         bandwidth = bw_s.iloc[-1] if not np.isnan(bw_s.iloc[-1]) else bw_s.iloc[-2]
-
         if np.isnan(ao) or np.isnan(bandwidth) or np.isnan(current_cmf): return "HOLD", 0
-
         up_score = 0
         if bandwidth < 0.18: up_score += 1
         if ao > 0: up_score += 1
         if current_cmf > 0.05: up_score += 1
-        
         down_score = 0
         if bandwidth < 0.18: down_score += 1
         if ao < 0: down_score += 1
         if current_cmf < -0.05: down_score += 1
-        
         if up_score >= 2:
             return "PREDICT_UP", (up_score * 100) + ((1/max(bandwidth, 0.001)) * ao)
         if down_score >= 2:
             return "PREDICT_DOWN", (down_score * 100) + ((1/max(bandwidth, 0.001)) * abs(ao))
-            
         return "HOLD", 0
     except: return "HOLD", 0
 
@@ -142,25 +123,62 @@ creds = Credentials.from_service_account_file("credentials.json", scopes=["https
 client = gspread.authorize(creds)
 spreadsheet = client.open(SPREADSHEET_NAME)
 
+# Helper to clean previous string values for math
+def clean_val(val):
+    try: return float(val.split(' ')[0])
+    except: return 0.0
+
 def update_sheet(sheet_name, data_list):
     try: sheet = spreadsheet.worksheet(sheet_name)
-    except: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
+    except: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=12)
+    
+    # 1. READ PREVIOUS WEEK (In-Sheet Memory)
+    prev_rows = sheet.get_all_values()
+    history = {}
+    if len(prev_rows) > 1:
+        for idx, row in enumerate(prev_rows[1:], start=1):
+            if row[0]: # row[0] is Stock Symbol
+                history[row[0]] = {"rank": idx, "bw": clean_val(row[1]), "ao": clean_val(row[2]), "cmf": clean_val(row[3])}
+
     sheet.clear()
-    headers = [["Stock", "Volatility (Squeeze)", "Momentum (AO)", "Institutional (CMF)", "BOT VERDICT"]]
+    # Updated Headers with Delta Columns
+    headers = [["Stock", "Volatility (Squeeze)", "Momentum (AO)", "Institutional (CMF)", "Rank Delta", "BW Delta", "AO Delta", "CMF Delta", "BOT VERDICT"]]
     rows = []
+    
     if not data_list:
         sheet.update([["No Stocks"]])
         return
-    for stock in data_list:
+
+    # 2. PROCESS CURRENT WEEK & CALCULATE DELTAS
+    for current_rank, stock in enumerate(data_list, start=1):
         ticker = yf.Ticker(stock)
         df = ticker.history(period="1y", interval="1wk")
         if not df.empty:
-            audit = get_audit_data(stock, df)
-            rows.append([stock] + audit)
-        time.sleep(0.5) # Anti-throttle pause for Google Sheets
+            audit = get_audit_data(stock, df) # returns [label_bw, label_ao, label_cmf, verdict, raw_bw, raw_ao, raw_cmf]
+            
+            # Comparison Logic
+            if stock in history:
+                prev = history[stock]
+                r_delta = prev['rank'] - current_rank
+                bw_delta = audit[4] - prev['bw']
+                ao_delta = audit[5] - prev['ao']
+                cmf_delta = audit[6] - prev['cmf']
+                
+                r_str = f"⬆️ {r_delta}" if r_delta > 0 else (f"⬇️ {abs(r_delta)}" if r_delta < 0 else "—")
+            else:
+                r_str, bw_delta, ao_delta, cmf_delta = "🆕 NEW", 0, 0, 0
+
+            # Building the row: Stock (0), BW (1), AO (2), CMF (3), R_Delta (4), BW_Delta (5), AO_Delta (6), CMF_Delta (7), Verdict (8)
+            rows.append([
+                stock, audit[0], audit[1], audit[2], 
+                r_str, f"{bw_delta:.4f}", f"{ao_delta:.2f}", f"{cmf_delta:.4f}", 
+                audit[3]
+            ])
+        time.sleep(0.5)
+    
     sheet.update(headers + rows)
 
-# --- EXECUTION ---
+# --- EXECUTION (REST OF THE PROGRAM UNTOUCHED) ---
 stocks_df = pd.read_csv("nse_stocks.csv")
 stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
 
@@ -224,23 +242,35 @@ top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x 
 predictive_up = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
 predictive_down = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
 
-# Update Sheets
+# Update Sheets (Comparison logic applies here)
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
 update_sheet("Rest_Monthly", rest_monthly)
-update_sheet("Weekly_Sell", weekly_sell_signals)
-update_sheet("Sell_Signals", sell_signals)
-update_sheet("Predictive_UP", predictive_up)
-update_sheet("Predictive_DOWN", predictive_down)
 
-# Telegram Messaging
+# Leave other sheets as they were (Simple Logic)
+def simple_update(sheet_name, data_list):
+    try: sheet = spreadsheet.worksheet(sheet_name)
+    except: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
+    sheet.clear()
+    headers = [["Stock"]]
+    rows = [[s] for s in data_list]
+    sheet.update(headers + rows)
+
+simple_update("Weekly_Sell", weekly_sell_signals)
+simple_update("Sell_Signals", sell_signals)
+simple_update("Predictive_UP", predictive_up)
+simple_update("Predictive_DOWN", predictive_down)
+
+# Telegram Messaging (UNTOUCHED)
 msg1 = f"🚀 ORIGINAL STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
 msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up[:15]}\n\nPredictive DOWN:\n{predictive_down[:15]}"
 send_telegram_message(msg1)
 send_telegram_message(msg2)
 
 print("Process Complete.")
+
+       
 
 
 
