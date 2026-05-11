@@ -13,7 +13,7 @@ import time
 
 # --- SETTINGS ---
 MARKET_CAP_LIMIT = 5000 * 10**7
-MONTHLY_HISTORY = "15y"
+MONTHLY_HISTORY = "max"
 WEEKLY_HISTORY = "max"
 SPREADSHEET_NAME = "Stock Bot Dashboard"
 TELEGRAM_TOKEN = "8630503074:AAHgONEVwJB_QVZ1GeKBaVGl9Z3Ct0E_yLw"
@@ -41,7 +41,7 @@ def rolling_cross(close, ssf, lookback):
 def rolling_setup_monthly(df, lookback):
     for i in range(1, lookback):
         if (df['Close'].iloc[-i] < df['SSF_50'].iloc[-i] and 
-            df['Close'].iloc[-i] < df['SSF_200'].iloc[-i] and 
+            df['Close'].iloc[-i] < df['SSF_100'].iloc[-i] and 
             df['Close'].iloc[-i] < df['SSF_250'].iloc[-i]):
             return True
     return False
@@ -133,7 +133,6 @@ def update_sheet(sheet_name, data_list):
     prev_rows = sheet.get_all_values()
     history = {}
     
-    # SAFETY CHECK: Ensure row has enough columns before indexing
     if len(prev_rows) > 1:
         for idx, row in enumerate(prev_rows[1:], start=1):
             if len(row) >= 4 and row[0]: 
@@ -170,7 +169,6 @@ def update_sheet(sheet_name, data_list):
             ])
         time.sleep(0.5)
     
-    # FIXED: Added range_name= and values= to avoid DeprecationWarning
     sheet.update(range_name='A1', values=(headers + rows))
 
 def simple_update(sheet_name, data_list):
@@ -194,6 +192,8 @@ for stock in stocks:
     try:
         ticker = yf.Ticker(stock)
         now = datetime.now()
+        
+        # --- WEEKLY SCAN ---
         raw_w = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
         w_df = raw_w.copy() if (now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16)) else raw_w.iloc[:-1].copy()
 
@@ -224,28 +224,45 @@ for stock in stocks:
                 if prev_h and w_df['Close'].iloc[-1] < w_df['SSF_20'].iloc[-1]:
                     weekly_sell_signals.append(stock)
 
+        # --- MONTHLY SCAN (SYNCHRONIZED SELL LOGIC) ---
         raw_m = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
         m_df = raw_m.iloc[:-1].copy()
-        if len(m_df) >= 80:
+        if len(m_df) >= 300: 
             m_close = m_df['Close'].values
             m_df['SSF_20'] = super_smoother(m_close, 20)
             m_df['SSF_50'] = super_smoother(m_close, 50)
-            if rolling_setup_monthly(m_df, 12) and rolling_cross(m_close, m_df['SSF_50'].values, 3):
-                score_m = 50 + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
-                monthly_buy_scored.append((stock, score_m))
-            if m_close[-2] > m_df['SSF_20'].iloc[-2] and m_close[-1] < m_df['SSF_20'].iloc[-1]:
-                sell_signals.append(stock)
+            m_df['SSF_100'] = super_smoother(m_close, 100)
+            m_df['SSF_200'] = super_smoother(m_close, 200)
+            m_df['SSF_250'] = super_smoother(m_close, 250)
+            
+            rsi_m = RSIIndicator(m_df['Close'], window=14).rsi()
+            rsi_ma_m = rsi_m.rolling(14).mean()
+            if (rolling_setup_monthly(m_df, 20) and rolling_cross(m_close, m_df['SSF_50'].values, 6) and 
+                rsi_m.iloc[-1] > rsi_ma_m.iloc[-1] and m_df['SSF_50'].iloc[-1] < m_df['SSF_200'].iloc[-1]):
+                
+                info = ticker.info
+                if info.get("marketCap", 0) >= MARKET_CAP_LIMIT and info.get("profitMargins", 0) > 0:
+                    score_m = rsi_m.iloc[-1] + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
+                    monthly_buy_scored.append((stock, score_m))
+            
+            if len(m_df) >= 2:
+                # UPDATED: Now matches weekly sell logic requirements (Price > SSF_20 AND SSF_50)
+                prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > m_df['SSF_50'].iloc[-2])
+                if prev_h_m and m_df['Close'].iloc[-1] < m_df['SSF_20'].iloc[-1]:
+                    sell_signals.append(stock)
     except: continue
 
 # Sorting
 weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
 top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in weekly_buy_scored[5:]]
+
 monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
 top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
+
 predictive_up_list = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
 predictive_down_list = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
 
-# Update Sheets with Delta Logic
+# Update Sheets
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
@@ -253,12 +270,11 @@ update_sheet("Rest_Monthly", rest_monthly)
 update_sheet("Predictive_UP", predictive_up_list)
 update_sheet("Predictive_DOWN", predictive_down_list)
 
-# Simple Update for Sells
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
 # Telegram
-msg1 = f"🚀 ORIGINAL STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
+msg1 = f"🚀 STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
 msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up_list[:15]}\n\nPredictive DOWN:\n{predictive_down_list[:15]}"
 send_telegram_message(msg1)
 send_telegram_message(msg2)
