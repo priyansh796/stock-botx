@@ -184,6 +184,7 @@ stocks_df = pd.read_csv("nse_stocks.csv")
 stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
 
 weekly_buy_scored, monthly_buy_scored = [], []
+coiled_spring_scored = [] # NEW LOGIC LIST
 weekly_sell_signals, sell_signals = [], []
 predictive_up, predictive_down = [] , []
 
@@ -216,8 +217,14 @@ for stock in stocks:
                 
                 info = ticker.info
                 if info.get("marketCap", 0) >= MARKET_CAP_LIMIT and info.get("profitMargins", 0) > 0:
+                    # ORIGINAL LOGIC
                     score = rsi_w.iloc[-1] + ((w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]) * 100
                     weekly_buy_scored.append((stock, score))
+                    
+                    # COILED SPRING NEW LOGIC (Calculating Potential Score)
+                    dist_from_ssf = (w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]
+                    potential_score = rsi_w.iloc[-1] / max(dist_from_ssf, 0.01)
+                    coiled_spring_scored.append((stock, potential_score))
 
             if len(w_df) >= 2:
                 prev_h = (w_df['Close'].iloc[-2] > w_df['SSF_20'].iloc[-2] and w_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
@@ -246,7 +253,6 @@ for stock in stocks:
                     monthly_buy_scored.append((stock, score_m))
             
             if len(m_df) >= 2:
-                # UPDATED: Now matches weekly sell logic requirements (Price > SSF_20 AND SSF_50)
                 prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > m_df['SSF_50'].iloc[-2])
                 if prev_h_m and m_df['Close'].iloc[-1] < m_df['SSF_20'].iloc[-1]:
                     sell_signals.append(stock)
@@ -259,10 +265,13 @@ top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in 
 monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
 top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
 
+# NEW LOGIC SORTING
+coiled_spring_top = [x[0] for x in sorted(coiled_spring_scored, key=lambda x: x[1], reverse=True)[:10]]
+
 predictive_up_list = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
 predictive_down_list = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
 
-# Update Sheets
+# Update Sheets (Originals)
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
@@ -270,13 +279,18 @@ update_sheet("Rest_Monthly", rest_monthly)
 update_sheet("Predictive_UP", predictive_up_list)
 update_sheet("Predictive_DOWN", predictive_down_list)
 
+# NEW LOGIC SHEET UPDATE
+update_sheet("Coiled_Spring_Top", coiled_spring_top)
+
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
 # Telegram
 msg1 = f"🚀 STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
 msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up_list[:15]}\n\nPredictive DOWN:\n{predictive_down_list[:15]}"
+msg3 = f"➰ COILED SPRING (POTENTIAL):\n{coiled_spring_top}"
 send_telegram_message(msg1)
 send_telegram_message(msg2)
+send_telegram_message(msg3)
 
 print("Process Complete.")
