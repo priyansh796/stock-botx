@@ -54,6 +54,63 @@ def rolling_setup_weekly(df, lookback):
             return True
     return False
 
+# --- SSF SPECIAL LOGIC FUNCTIONS ---
+def check_ssf_special_weekly(df):
+    """
+    Checks if current price is above SSF_200 and SSF_250, 
+    was below SSF_50 previously, and crossed above SSF_50 within the last 6 weeks.
+    """
+    if len(df) < 7:
+        return False
+    
+    current_close = df['Close'].iloc[-1]
+    current_ssf50 = df['SSF_50'].iloc[-1]
+    current_ssf200 = df['SSF_200'].iloc[-1]
+    current_ssf250 = df['SSF_250'].iloc[-1]
+    
+    # Must be currently above SSF_50, SSF_200, and SSF_250
+    if not (current_close > current_ssf50 and current_close > current_ssf200 and current_close > current_ssf250):
+        return False
+        
+    # Check if any candle in the last 6 weeks crossed above SSF_50 from below
+    cross_found = False
+    for i in range(1, 7):
+        prev_idx = -i - 1
+        curr_idx = -i
+        if df['Close'].iloc[prev_idx] < df['SSF_50'].iloc[prev_idx] and df['Close'].iloc[curr_idx] > df['SSF_50'].iloc[curr_idx]:
+            cross_found = True
+            break
+            
+    return cross_found
+
+def check_ssf_special_monthly(df):
+    """
+    Checks if current price is above SSF_200 and SSF_250, 
+    was below SSF_50 previously, and crossed above SSF_50 within the last 3 months (3 candles).
+    """
+    if len(df) < 4:
+        return False
+        
+    current_close = df['Close'].iloc[-1]
+    current_ssf50 = df['SSF_50'].iloc[-1]
+    current_ssf200 = df['SSF_200'].iloc[-1]
+    current_ssf250 = df['SSF_250'].iloc[-1]
+    
+    # Must be currently above SSF_50, SSF_200, and SSF_250
+    if not (current_close > current_ssf50 and current_close > current_ssf200 and current_close > current_ssf250):
+        return False
+        
+    # Check if any candle in the last 3 months crossed above SSF_50 from below
+    cross_found = False
+    for i in range(1, 4):
+        prev_idx = -i - 1
+        curr_idx = -i
+        if df['Close'].iloc[prev_idx] < df['SSF_50'].iloc[prev_idx] and df['Close'].iloc[curr_idx] > df['SSF_50'].iloc[curr_idx]:
+            cross_found = True
+            break
+            
+    return cross_found
+
 # --- AUDIT HELPER ---
 def get_audit_data(stock_symbol, local_df):
     try:
@@ -188,6 +245,10 @@ coiled_spring_scored = [] # NEW LOGIC LIST
 weekly_sell_signals, sell_signals = [], []
 predictive_up, predictive_down = [] , []
 
+# NEW SPECIAL SEPARATE LOGIC LISTS
+ssf_special_weekly = []
+ssf_special_monthly = []
+
 for stock in stocks:
     print(f"Scanning {stock}...")
     try:
@@ -226,6 +287,10 @@ for stock in stocks:
                     potential_score = rsi_w.iloc[-1] / max(dist_from_ssf, 0.01)
                     coiled_spring_scored.append((stock, potential_score))
 
+            # SEPARATE EXTRA CHECK FOR SSF SPECIAL WEEKLY
+            if check_ssf_special_weekly(w_df):
+                ssf_special_weekly.append(stock)
+
             if len(w_df) >= 2:
                 prev_h = (w_df['Close'].iloc[-2] > w_df['SSF_20'].iloc[-2] and w_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
                 if prev_h and w_df['Close'].iloc[-1] < w_df['SSF_20'].iloc[-1]:
@@ -252,6 +317,10 @@ for stock in stocks:
                     score_m = rsi_m.iloc[-1] + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
                     monthly_buy_scored.append((stock, score_m))
             
+            # SEPARATE EXTRA CHECK FOR SSF SPECIAL MONTHLY
+            if check_ssf_special_monthly(m_df):
+                ssf_special_monthly.append(stock)
+
             if len(m_df) >= 2:
                 prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > m_df['SSF_50'].iloc[-2])
                 if prev_h_m and m_df['Close'].iloc[-1] < m_df['SSF_20'].iloc[-1]:
@@ -282,6 +351,10 @@ update_sheet("Predictive_DOWN", predictive_down_list)
 # NEW LOGIC SHEET UPDATE
 update_sheet("Coiled_Spring_Top", coiled_spring_top)
 
+# NEW SSF SPECIAL SHEETS UPDATES
+update_sheet("SSF_Special_Weekly", ssf_special_weekly)
+update_sheet("SSF_Special_Monthly", ssf_special_monthly)
+
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
@@ -289,8 +362,11 @@ simple_update("Sell_Signals", sell_signals)
 msg1 = f"🚀 STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
 msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up_list[:15]}\n\nPredictive DOWN:\n{predictive_down_list[:15]}"
 msg3 = f"➰ COILED SPRING (POTENTIAL):\n{coiled_spring_top}"
+msg4 = f"📈 SSF SPECIAL SIGNALS\n\nSSF Special Weekly:\n{ssf_special_weekly}\n\nSSF Special Monthly:\n{ssf_special_monthly}"
+
 send_telegram_message(msg1)
 send_telegram_message(msg2)
 send_telegram_message(msg3)
+send_telegram_message(msg4)
 
 print("Process Complete.")
