@@ -111,7 +111,7 @@ def check_ssf_special_monthly(df):
             
     return cross_found
 
-def check_ssf_two_weeks_ago(df):
+def check_ssf_two_weeks_ago_confirmed(df):
     """
     Checks if a stock crossed above SSF_50 exactly 2 weeks ago (from index -4 to -3)
     and has remained strictly above SSF_50 since then (index -2 and -1).
@@ -126,6 +126,22 @@ def check_ssf_two_weeks_ago(df):
     remained_above = (df['Close'].iloc[-2] > df['SSF_50'].iloc[-2]) and (df['Close'].iloc[-1] > df['SSF_50'].iloc[-1])
     
     return crossed_two_weeks_ago and remained_above
+
+def check_ssf_two_months_ago_confirmed(df):
+    """
+    Checks if a stock crossed above SSF_50 exactly 2 months ago (from index -4 to -3)
+    and has remained strictly above SSF_50 since then (index -2 and -1).
+    """
+    if len(df) < 5:
+        return False
+        
+    # Cross occurred exactly 2 months ago (-3 candle crossed above from -4 candle)
+    crossed_two_months_ago = (df['Close'].iloc[-4] < df['SSF_50'].iloc[-4]) and (df['Close'].iloc[-3] > df['SSF_50'].iloc[-3])
+    
+    # Remained above SSF_50 in the following month (-2) and current month (-1)
+    remained_above = (df['Close'].iloc[-2] > df['SSF_50'].iloc[-2]) and (df['Close'].iloc[-1] > df['SSF_50'].iloc[-1])
+    
+    return crossed_two_months_ago and remained_above
 
 # --- AUDIT HELPER ---
 def get_audit_data(stock_symbol, local_df):
@@ -265,6 +281,7 @@ predictive_up, predictive_down = [] , []
 ssf_special_weekly = []
 ssf_special_monthly = []
 ssf_two_weeks_ago = []
+ssf_two_months_ago = []
 
 for stock in stocks:
     print(f"Scanning {stock}...")
@@ -308,9 +325,10 @@ for stock in stocks:
             if check_ssf_special_weekly(w_df):
                 ssf_special_weekly.append(stock)
 
-            # SEPARATE EXTRA CHECK FOR SSF TWO WEEKS AGO (Ensuring standard setup constraints apply)
-            if rolling_setup_weekly(w_df, 20) and check_ssf_two_weeks_ago(w_df):
-                ssf_two_weeks_ago.append(stock)
+            # SEPARATE EXTRA CHECK FOR SSF TWO WEEKS AGO (Validates exact underlying parameters)
+            if rolling_setup_weekly(w_df, 20) and w_df['SSF_50'].iloc[-1] < w_df['SSF_200'].iloc[-1]:
+                if check_ssf_two_weeks_ago_confirmed(w_df):
+                    ssf_two_weeks_ago.append(stock)
 
             if len(w_df) >= 2:
                 prev_h = (w_df['Close'].iloc[-2] > w_df['SSF_20'].iloc[-2] and w_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
@@ -341,6 +359,11 @@ for stock in stocks:
             # SEPARATE EXTRA CHECK FOR SSF SPECIAL MONTHLY
             if check_ssf_special_monthly(m_df):
                 ssf_special_monthly.append(stock)
+
+            # SEPARATE EXTRA CHECK FOR SSF TWO MONTHS AGO (Validates exact underlying parameters)
+            if rolling_setup_monthly(m_df, 20) and m_df['SSF_50'].iloc[-1] < m_df['SSF_200'].iloc[-1]:
+                if check_ssf_two_months_ago_confirmed(m_df):
+                    ssf_two_months_ago.append(stock)
 
             if len(m_df) >= 2:
                 prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > m_df['SSF_50'].iloc[-2])
@@ -376,8 +399,9 @@ update_sheet("Coiled_Spring_Top", coiled_spring_top)
 update_sheet("SSF_Special_Weekly", ssf_special_weekly)
 update_sheet("SSF_Special_Monthly", ssf_special_monthly)
 
-# NEW TWO-WEEKS-AGO SHEET UPDATE
+# NEW TWO-WEEKS/MONTHS AGO SHEET UPDATES WITH THE EXPLICIT STRATEGY PARAMETERS
 update_sheet("SSF_Two_Weeks_Ago", ssf_two_weeks_ago)
+update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago)
 
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
@@ -388,11 +412,13 @@ msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up_list[:15]}\n\nP
 msg3 = f"➰ COILED SPRING (POTENTIAL):\n{coiled_spring_top}"
 msg4 = f"📈 SSF SPECIAL SIGNALS\n\nSSF Special Weekly:\n{ssf_special_weekly}\n\nSSF Special Monthly:\n{ssf_special_monthly}"
 msg5 = f"⏰ SSF TWO WEEKS AGO:\n{ssf_two_weeks_ago}"
+msg6 = f"📅 SSF TWO MONTHS AGO:\n{ssf_two_months_ago}"
 
 send_telegram_message(msg1)
 send_telegram_message(msg2)
 send_telegram_message(msg3)
 send_telegram_message(msg4)
 send_telegram_message(msg5)
+send_telegram_message(msg6)
 
 print("Process Complete.")
