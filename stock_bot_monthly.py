@@ -1,18 +1,24 @@
-import yfinance as yf
+import os
+import sys
+import time
 import pandas as pd
 import numpy as np
-from ta.momentum import RSIIndicator, AwesomeOscillatorIndicator
-from ta.volatility import BollingerBands
-from ta.volume import ChaikinMoneyFlowIndicator 
-import os
+import yfinance as yf
 import gspread
 from google.oauth2.service_account import Credentials
 import requests
 from datetime import datetime
-import time
+from ta.momentum import RSIIndicator, AwesomeOscillatorIndicator
+from ta.volatility import BollingerBands
+from ta.volume import ChaikinMoneyFlowIndicator 
 
-# IMPORT GOOGLE AI SDK FOR THE AI LAYER
-from google import genai
+# --- NEW GOOGLE-GENAI SDK INITIALIZATION FIXES ---
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    print("Error: Please make sure 'google-genai' is listed in your stock_bot.yml workflow install list.")
+    sys.exit(1)
 
 # --- SETTINGS ---
 MARKET_CAP_LIMIT = 5000 * 10**7
@@ -21,9 +27,6 @@ WEEKLY_HISTORY = "max"
 SPREADSHEET_NAME = "Stock Bot Dashboard"
 TELEGRAM_TOKEN = "8630503074:AAHgONEVwJB_QVZ1GeKBaVGl9Z3Ct0E_yLw"
 CHAT_ID = "8258280498"
-
-# SET YOUR FREE GEMINI API KEY HERE
-os.environ["GEMINI_API_KEY"] = "YOUR_FREE_GEMINI_API_KEY"
 
 # --- CORE MATH FUNCTIONS ---
 def super_smoother(price, period):
@@ -231,15 +234,21 @@ def simple_update(sheet_name, data_list):
     sheet.update(range_name='A1', values=(headers + rows))
 
 # =====================================================================
-# DEEP MULTI-FACTOR HOLISTIC AI ANALYSIS ENGINE
+# DEEP MULTI-FACTOR HOLISTIC AI ANALYSIS ENGINE (FIXED)
 # =====================================================================
 def get_holistic_ai_analysis(stock_symbol, w_df, audit_metrics, financial_info):
     """
     Executes a comprehensive, 3-dimensional audit (Technical + Fundamental + Sentiment)
-    on the confirmed SSF Two Weeks candidates.
+    on the confirmed SSF Two Weeks candidates using the clean google-genai syntax.
     """
     try:
-        ai_client = genai.Client()
+        # Secure lookup from injected repository secrets environment vector
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key or api_key == "YOUR_FREE_GEMINI_API_KEY":
+            return "VERDICT: API_ERROR | FUNDAMENTALS: ERROR | SENTIMENT: ERROR | REASON: Missing GEMINI_API_KEY GitHub Secret configuration | SL: N/A | TP: N/A"
+
+        # Correct initialization format for new SDK
+        ai_client = genai.Client(api_key=api_key)
         latest_close = w_df['Close'].iloc[-1]
         
         # Pull profile data variables from yfinance info dictionary safely
@@ -275,13 +284,20 @@ def get_holistic_ai_analysis(stock_symbol, w_df, audit_metrics, financial_info):
         VERDICT: [Your Final Choice] | FUNDAMENTALS: [Brief fundamental critique] | SENTIMENT: [Brief sector/news sentiment view] | REASON: [Core synthesis justification] | SL: [Value] | TP: [Value]
         """
         
+        # Explicit configuration build without raw legacy option data types
+        config = types.GenerateContentConfig(
+            temperature=0.2,
+            max_output_tokens=500
+        )
+
         response = ai_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
+            config=config
         )
         return response.text.strip()
     except Exception as e:
-        return f"VERDICT: AI_ERROR | FUNDAMENTALS: ERROR | SENTIMENT: ERROR | REASON: {str(e)} | SL: N/A | TP: N/A"
+        return f"VERDICT: AI_ERROR | FUNDAMENTALS: ERROR | SENTIMENT: ERROR | REASON: {str(e).replace('|', '')} | SL: N/A | TP: N/A"
 
 def run_ssf_two_weeks_ai_deep_dive(ssf_list):
     """
