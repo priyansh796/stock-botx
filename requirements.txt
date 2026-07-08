@@ -9,3 +9,4 @@ google-auth-httplib2
 openpyxl
 tradingview-ta
 colorama
+google-genai
