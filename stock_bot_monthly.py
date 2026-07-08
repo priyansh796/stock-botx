@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import re
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -12,7 +13,7 @@ from ta.momentum import RSIIndicator, AwesomeOscillatorIndicator
 from ta.volatility import BollingerBands
 from ta.volume import ChaikinMoneyFlowIndicator 
 
-# --- NEW GOOGLE-GENAI SDK INITIALIZATION FIXES ---
+# --- GOOGLE-GENAI SDK INITIALIZATION ---
 try:
     from google import genai
     from google.genai import types
@@ -234,60 +235,39 @@ def simple_update(sheet_name, data_list):
     sheet.update(range_name='A1', values=(headers + rows))
 
 # =====================================================================
-# DEEP MULTI-FACTOR HOLISTIC AI ANALYSIS ENGINE (FIXED)
+# DEEP MULTI-FACTOR HOLISTIC AI ANALYSIS ENGINE (RE-OPTIMIZED)
 # =====================================================================
 def get_holistic_ai_analysis(stock_symbol, w_df, audit_metrics, financial_info):
-    """
-    Executes a comprehensive, 3-dimensional audit (Technical + Fundamental + Sentiment)
-    on the confirmed SSF Two Weeks candidates using the clean google-genai syntax.
-    """
     try:
-        # Secure lookup from injected repository secrets environment vector
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key or api_key == "YOUR_FREE_GEMINI_API_KEY":
-            return "VERDICT: API_ERROR | FUNDAMENTALS: ERROR | SENTIMENT: ERROR | REASON: Missing GEMINI_API_KEY GitHub Secret configuration | SL: N/A | TP: N/A"
+            return "VERDICT: API_ERROR | FUNDAMENTALS: Missing Key | SENTIMENT: Error | REASON: Secret variable lookup failed | SL: N/A | TP: N/A"
 
-        # Correct initialization format for new SDK
         ai_client = genai.Client(api_key=api_key)
         latest_close = w_df['Close'].iloc[-1]
         
-        # Pull profile data variables from yfinance info dictionary safely
         pe_ratio = financial_info.get("trailingPE", "N/A")
         pb_ratio = financial_info.get("priceToBook", "N/A")
         debt_to_equity = financial_info.get("debtToEquity", "N/A")
         margin_trend = financial_info.get("profitMargins", "N/A")
-        company_summary = financial_info.get("longBusinessSummary", "No corporate description profile located on index servers.")
+        company_summary = financial_info.get("longBusinessSummary", "No summary profile matching index headers.")
 
         prompt = f"""
-        You are an elite quantitative asset manager. Conduct a comprehensive investment analysis on the Indian stock {stock_symbol} which has successfully sustained an SSF 50 Breakout confirmation for 2 straight weeks.
-
-        [1. QUANTITATIVE/TECHNICAL PROFILE]
+        You are an elite quantitative asset manager. Conduct a swift investment verification audit on Indian stock {stock_symbol}.
         - Current Price: INR {latest_close:.2f}
         - Volatility Squeeze Metric: {audit_metrics[0]}
         - Oscillator Momentum (AO): {audit_metrics[1]}
         - Institutional Money Flow (CMF): {audit_metrics[2]}
+        - Trailing PE Ratio: {pe_ratio} | PB Ratio: {pb_ratio} | Debt/Equity: {debt_to_equity} | Profit Margin: {margin_trend}
+        - Business Summary: {company_summary[:300]}...
 
-        [2. FUNDAMENTAL PROFILE DATA]
-        - Trailing PE Ratio: {pe_ratio}
-        - Price to Book (PB) Ratio: {pb_ratio}
-        - Debt to Equity Ratio: {debt_to_equity}
-        - Profit Margin Status: {margin_trend}
-        - Business Context Profile: {company_summary[:500]}...
-
-        [YOUR ANALYSIS TASK]
-        1. Evaluate corporate fundamental stability against the technical trend.
-        2. Assess broader sectoral macro headwinds and market sentiment surrounding this asset.
-        3. Determine if the technical breakout matches the fundamental reality or if it is an unsafe value trap.
-        4. Deliver a final decision: HIGH-CONVICTION-BUY, SPECULATIVE-BUY, or REJECT-HOLD.
-
-        Respond in exactly this structural layout without markdown formatting paragraphs:
-        VERDICT: [Your Final Choice] | FUNDAMENTALS: [Brief fundamental critique] | SENTIMENT: [Brief sector/news sentiment view] | REASON: [Core synthesis justification] | SL: [Value] | TP: [Value]
+        Return your output using exactly this inline structural layout format without adding any linebreaks or markdown bolding:
+        VERDICT: [HIGH-CONVICTION-BUY, SPECULATIVE-BUY, or REJECT-HOLD] | FUNDAMENTALS: [Critique] | SENTIMENT: [View] | REASON: [Justification] | SL: [Value] | TP: [Value]
         """
         
-        # Explicit configuration build without raw legacy option data types
         config = types.GenerateContentConfig(
-            temperature=0.2,
-            max_output_tokens=500
+            temperature=0.1,
+            max_output_tokens=350
         )
 
         response = ai_client.models.generate_content(
@@ -295,15 +275,14 @@ def get_holistic_ai_analysis(stock_symbol, w_df, audit_metrics, financial_info):
             contents=prompt,
             config=config
         )
-        return response.text.strip()
+        return response.text.strip().replace("\n", " ")
     except Exception as e:
-        return f"VERDICT: AI_ERROR | FUNDAMENTALS: ERROR | SENTIMENT: ERROR | REASON: {str(e).replace('|', '')} | SL: N/A | TP: N/A"
+        err_str = str(e).replace("|", "").replace("\n", " ")
+        if "429" in err_str:
+            return "VERDICT: 429 RESOURCE_EXHAUSTED | FUNDAMENTALS: RATE_LIMITED | SENTIMENT: RATE_LIMITED | REASON: Hit Gemini Free Tier Limit | SL: N/A | TP: N/A"
+        return f"VERDICT: AI_ERROR | FUNDAMENTALS: ERROR | SENTIMENT: ERROR | REASON: {err_str[:80]} | SL: N/A | TP: N/A"
 
 def run_ssf_two_weeks_ai_deep_dive(ssf_list):
-    """
-    Iterates through the verified SSF 2-Week candidates, fetches their core fundamental data,
-    and runs the holistic analysis loop.
-    """
     if not ssf_list:
         print("SSF Two Weeks list empty. Skipping deep dive.")
         return []
@@ -311,7 +290,7 @@ def run_ssf_two_weeks_ai_deep_dive(ssf_list):
     try:
         sheet = spreadsheet.worksheet("AI_SSF_2Weeks_Deep_Dive")
     except:
-        sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=50, cols=7)
+        sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=100, cols=7)
         
     sheet.clear()
     headers = [["Stock", "AI Final Verdict", "Fundamental Summary Audit", "Market Sentiment Check", "Synthesis Reason", "Stop-Loss", "Take-Profit Target"]]
@@ -322,33 +301,34 @@ def run_ssf_two_weeks_ai_deep_dive(ssf_list):
         ticker = yf.Ticker(stock)
         df = ticker.history(period="1y", interval="1wk")
         if not df.empty:
-            # Recompute parameters for prompt building
             close_arr = df['Close'].values
             df['SSF_50'] = super_smoother(close_arr, 50)
             audit = get_audit_data(stock, df)
             
-            # Fetch information parameters
-            try:
-                info = ticker.info
-            except:
-                info = {}
+            try: info = ticker.info
+            except: info = {}
                 
             ai_output = get_holistic_ai_analysis(stock, df, audit, info)
             
-            # Extract parameters safely
-            try:
-                parts = ai_output.split(" | ")
-                v_val = parts[0].split(": ")[1]
-                f_val = parts[1].split(": ")[1]
-                s_val = parts[2].split(": ")[1]
-                r_val = parts[3].split(": ")[1]
-                sl_val = parts[4].split(": ")[1]
-                tp_val = parts[5].split(": ")[1]
-            except:
-                v_val, f_val, s_val, r_val, sl_val, tp_val = "PARSING_FAILED", "ERROR", "ERROR", ai_output, "N/A", "N/A"
+            # SAFE REGEX PARSER (Bypasses markdown or formatting variations)
+            v_match = re.search(r"VERDICT:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
+            f_match = re.search(r"FUNDAMENTALS:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
+            s_match = re.search(r"SENTIMENT:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
+            r_match = re.search(r"REASON:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
+            sl_match = re.search(r"SL:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
+            tp_match = re.search(r"TP:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
+
+            v_val = v_match.group(1).strip() if v_match else "PARSING_FAILED"
+            f_val = f_match.group(1).strip() if f_match else "ERROR"
+            s_val = s_match.group(1).strip() if s_match else "ERROR"
+            r_val = r_match.group(1).strip() if r_match else ai_output
+            sl_val = sl_match.group(1).strip() if sl_match else "N/A"
+            tp_val = tp_match.group(1).strip() if tp_match else "N/A"
                 
             rows.append([stock, v_val, f_val, s_val, r_val, sl_val, tp_val])
-            time.sleep(4) # Enforces strict safety padding for the 15-RPM free rate cap
+            
+            # THROTTLING: 4.5s delay keeps workflow safely under 15 requests/min limit
+            time.sleep(4.5) 
             
     sheet.update(range_name='A1', values=(headers + rows))
     return rows
@@ -497,7 +477,7 @@ send_telegram_message(msg4)
 send_telegram_message(msg5)
 send_telegram_message(msg6)
 
-# SAFE TELEGRAM PAYLOAD SPLITTER (Protects against 4000-character caps)
+# SAFE TELEGRAM PAYLOAD SPLITTER
 if not ai_deep_dive_results:
     send_telegram_message("🧠 HOLISTIC AI DEEP DIVE: SSF 2-WEEK BREAKOUTS\n\nNo assets matched the target verification parameters today.")
 else:
@@ -505,7 +485,6 @@ else:
     for item in ai_deep_dive_results:
         stock_text = f"• Ticker: *{item[0]}*\n  Verdict: {item[1]}\n  Fundamentals: {item[2]}\n  Sentiment: {item[3]}\n  Reason: {item[4]}\n  SL: {item[5]} | TP: {item[6]}\n\n"
         
-        # Split chunks at 3800 characters to retain buffer safety zones
         if len(current_chunk) + len(stock_text) > 3800:
             send_telegram_message(current_chunk)
             current_chunk = "🧠 AI DEEP DIVE (CONTINUED):\n\n" + stock_text
