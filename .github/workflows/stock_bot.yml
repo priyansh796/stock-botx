@@ -1,4 +1,4 @@
-name: Run Stock Bot v2
+Name: Run Stock Bot v2
 
 on:
   schedule:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   run-bot:
-    runs-on: ubuntu-latest
+    runs-runs-on: ubuntu-latest
 
     steps:
 
@@ -22,10 +22,12 @@ jobs:
       - name: Install libraries
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install yfinance pandas numpy ta gspread google-auth google-auth-oauthlib google-auth-httplib2 openpyxl scipy tradingview-ta
+          python3 -m pip install yfinance pandas numpy ta gspread google-auth google-auth-oauthlib google-auth-httplib2 openpyxl scipy tradingview-ta google-genai
 
       - name: Create credentials.json
         run: echo '${{ secrets.GOOGLE_CREDS }}' > credentials.json
 
       - name: Run Stock Bot
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python3 stock_bot_monthly.py
