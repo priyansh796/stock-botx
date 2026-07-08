@@ -11,6 +11,9 @@ import requests
 from datetime import datetime
 import time
 
+# IMPORT GOOGLE AI SDK FOR THE AI LAYER
+from google import genai
+
 # --- SETTINGS ---
 MARKET_CAP_LIMIT = 5000 * 10**7
 MONTHLY_HISTORY = "max"
@@ -18,6 +21,9 @@ WEEKLY_HISTORY = "max"
 SPREADSHEET_NAME = "Stock Bot Dashboard"
 TELEGRAM_TOKEN = "8630503074:AAHgONEVwJB_QVZ1GeKBaVGl9Z3Ct0E_yLw"
 CHAT_ID = "8258280498"
+
+# SET YOUR FREE GEMINI API KEY HERE
+os.environ["GEMINI_API_KEY"] = "YOUR_FREE_GEMINI_API_KEY"
 
 # --- CORE MATH FUNCTIONS ---
 def super_smoother(price, period):
@@ -56,23 +62,12 @@ def rolling_setup_weekly(df, lookback):
 
 # --- SSF SPECIAL LOGIC FUNCTIONS ---
 def check_ssf_special_weekly(df):
-    """
-    Checks if current price is above SSF_200 and SSF_250, 
-    was below SSF_50 previously, and crossed above SSF_50 within the last 6 weeks.
-    """
-    if len(df) < 7:
-        return False
-    
+    if len(df) < 7: return False
     current_close = df['Close'].iloc[-1]
     current_ssf50 = df['SSF_50'].iloc[-1]
     current_ssf200 = df['SSF_200'].iloc[-1]
     current_ssf250 = df['SSF_250'].iloc[-1]
-    
-    # Must be currently above SSF_50, SSF_200, and SSF_250
-    if not (current_close > current_ssf50 and current_close > current_ssf200 and current_close > current_ssf250):
-        return False
-        
-    # Check if any candle in the last 6 weeks crossed above SSF_50 from below
+    if not (current_close > current_ssf50 and current_close > current_ssf200 and current_close > current_ssf250): return False
     cross_found = False
     for i in range(1, 7):
         prev_idx = -i - 1
@@ -80,27 +75,15 @@ def check_ssf_special_weekly(df):
         if df['Close'].iloc[prev_idx] < df['SSF_50'].iloc[prev_idx] and df['Close'].iloc[curr_idx] > df['SSF_50'].iloc[curr_idx]:
             cross_found = True
             break
-            
     return cross_found
 
 def check_ssf_special_monthly(df):
-    """
-    Checks if current price is above SSF_200 and SSF_250, 
-    was below SSF_50 previously, and crossed above SSF_50 within the last 3 months (3 candles).
-    """
-    if len(df) < 4:
-        return False
-        
+    if len(df) < 4: return False
     current_close = df['Close'].iloc[-1]
     current_ssf50 = df['SSF_50'].iloc[-1]
     current_ssf200 = df['SSF_200'].iloc[-1]
     current_ssf250 = df['SSF_250'].iloc[-1]
-    
-    # Must be currently above SSF_50, SSF_200, and SSF_250
-    if not (current_close > current_ssf50 and current_close > current_ssf200 and current_close > current_ssf250):
-        return False
-        
-    # Check if any candle in the last 3 months crossed above SSF_50 from below
+    if not (current_close > current_ssf50 and current_close > current_ssf200 and current_close > current_ssf250): return False
     cross_found = False
     for i in range(1, 4):
         prev_idx = -i - 1
@@ -108,39 +91,18 @@ def check_ssf_special_monthly(df):
         if df['Close'].iloc[prev_idx] < df['SSF_50'].iloc[prev_idx] and df['Close'].iloc[curr_idx] > df['SSF_50'].iloc[curr_idx]:
             cross_found = True
             break
-            
     return cross_found
 
 def check_ssf_two_weeks_ago_confirmed(df):
-    """
-    Checks if a stock crossed above SSF_50 exactly 2 weeks ago (from index -4 to -3)
-    and has remained strictly above SSF_50 since then (index -2 and -1).
-    """
-    if len(df) < 5:
-        return False
-        
-    # Cross occurred exactly 2 weeks ago (-3 candle crossed above from -4 candle)
+    if len(df) < 5: return False
     crossed_two_weeks_ago = (df['Close'].iloc[-4] < df['SSF_50'].iloc[-4]) and (df['Close'].iloc[-3] > df['SSF_50'].iloc[-3])
-    
-    # Remained above SSF_50 in the following week (-2) and current week (-1)
     remained_above = (df['Close'].iloc[-2] > df['SSF_50'].iloc[-2]) and (df['Close'].iloc[-1] > df['SSF_50'].iloc[-1])
-    
     return crossed_two_weeks_ago and remained_above
 
 def check_ssf_two_months_ago_confirmed(df):
-    """
-    Checks if a stock crossed above SSF_50 exactly 2 months ago (from index -4 to -3)
-    and has remained strictly above SSF_50 since then (index -2 and -1).
-    """
-    if len(df) < 5:
-        return False
-        
-    # Cross occurred exactly 2 months ago (-3 candle crossed above from -4 candle)
+    if len(df) < 5: return False
     crossed_two_months_ago = (df['Close'].iloc[-4] < df['SSF_50'].iloc[-4]) and (df['Close'].iloc[-3] > df['SSF_50'].iloc[-3])
-    
-    # Remained above SSF_50 in the following month (-2) and current month (-1)
     remained_above = (df['Close'].iloc[-2] > df['SSF_50'].iloc[-2]) and (df['Close'].iloc[-1] > df['SSF_50'].iloc[-1])
-    
     return crossed_two_months_ago and remained_above
 
 # --- AUDIT HELPER ---
@@ -206,10 +168,10 @@ def send_telegram_message(message):
         requests.post(url, data={"chat_id": CHAT_ID, "text": message})
     except: pass
 
-# --- MAIN ENGINE ---
+# --- MAIN ENGINE INITIALIZATION ---
 creds = Credentials.from_service_account_file("credentials.json", scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
-client = gspread.authorize(creds)
-spreadsheet = client.open(SPREADSHEET_NAME)
+client_gspread = gspread.authorize(creds)
+spreadsheet = client_gspread.open(SPREADSHEET_NAME)
 
 def clean_val(val):
     try: return float(val.split(' ')[0])
@@ -268,16 +230,124 @@ def simple_update(sheet_name, data_list):
     rows = [[s] for s in data_list]
     sheet.update(range_name='A1', values=(headers + rows))
 
-# --- EXECUTION ---
+# =====================================================================
+# DEEP MULTI-FACTOR HOLISTIC AI ANALYSIS ENGINE
+# =====================================================================
+def get_holistic_ai_analysis(stock_symbol, w_df, audit_metrics, financial_info):
+    """
+    Executes a comprehensive, 3-dimensional audit (Technical + Fundamental + Sentiment)
+    on the confirmed SSF Two Weeks candidates.
+    """
+    try:
+        ai_client = genai.Client()
+        latest_close = w_df['Close'].iloc[-1]
+        
+        # Pull profile data variables from yfinance info dictionary safely
+        pe_ratio = financial_info.get("trailingPE", "N/A")
+        pb_ratio = financial_info.get("priceToBook", "N/A")
+        debt_to_equity = financial_info.get("debtToEquity", "N/A")
+        margin_trend = financial_info.get("profitMargins", "N/A")
+        company_summary = financial_info.get("longBusinessSummary", "No corporate description profile located on index servers.")
+
+        prompt = f"""
+        You are an elite quantitative asset manager. Conduct a comprehensive investment analysis on the Indian stock {stock_symbol} which has successfully sustained an SSF 50 Breakout confirmation for 2 straight weeks.
+
+        [1. QUANTITATIVE/TECHNICAL PROFILE]
+        - Current Price: INR {latest_close:.2f}
+        - Volatility Squeeze Metric: {audit_metrics[0]}
+        - Oscillator Momentum (AO): {audit_metrics[1]}
+        - Institutional Money Flow (CMF): {audit_metrics[2]}
+
+        [2. FUNDAMENTAL PROFILE DATA]
+        - Trailing PE Ratio: {pe_ratio}
+        - Price to Book (PB) Ratio: {pb_ratio}
+        - Debt to Equity Ratio: {debt_to_equity}
+        - Profit Margin Status: {margin_trend}
+        - Business Context Profile: {company_summary[:500]}...
+
+        [YOUR ANALYSIS TASK]
+        1. Evaluate corporate fundamental stability against the technical trend.
+        2. Assess broader sectoral macro headwinds and market sentiment surrounding this asset.
+        3. Determine if the technical breakout matches the fundamental reality or if it is an unsafe value trap.
+        4. Deliver a final decision: HIGH-CONVICTION-BUY, SPECULATIVE-BUY, or REJECT-HOLD.
+
+        Respond in exactly this structural layout without markdown formatting paragraphs:
+        VERDICT: [Your Final Choice] | FUNDAMENTALS: [Brief fundamental critique] | SENTIMENT: [Brief sector/news sentiment view] | REASON: [Core synthesis justification] | SL: [Value] | TP: [Value]
+        """
+        
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"VERDICT: AI_ERROR | FUNDAMENTALS: ERROR | SENTIMENT: ERROR | REASON: {str(e)} | SL: N/A | TP: N/A"
+
+def run_ssf_two_weeks_ai_deep_dive(ssf_list):
+    """
+    Iterates through the verified SSF 2-Week candidates, fetches their core fundamental data,
+    and runs the holistic analysis loop.
+    """
+    if not ssf_list:
+        print("SSF Two Weeks list empty. Skipping deep dive.")
+        return []
+
+    try:
+        sheet = spreadsheet.worksheet("AI_SSF_2Weeks_Deep_Dive")
+    except:
+        sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=50, cols=7)
+        
+    sheet.clear()
+    headers = [["Stock", "AI Final Verdict", "Fundamental Summary Audit", "Market Sentiment Check", "Synthesis Reason", "Stop-Loss", "Take-Profit Target"]]
+    rows = []
+    
+    print(f"Executing Holistic AI Audits on {len(ssf_list)} SSF candidates...")
+    for stock in ssf_list:
+        ticker = yf.Ticker(stock)
+        df = ticker.history(period="1y", interval="1wk")
+        if not df.empty:
+            # Recompute parameters for prompt building
+            close_arr = df['Close'].values
+            df['SSF_50'] = super_smoother(close_arr, 50)
+            audit = get_audit_data(stock, df)
+            
+            # Fetch information parameters
+            try:
+                info = ticker.info
+            except:
+                info = {}
+                
+            ai_output = get_holistic_ai_analysis(stock, df, audit, info)
+            
+            # Extract parameters safely
+            try:
+                parts = ai_output.split(" | ")
+                v_val = parts[0].split(": ")[1]
+                f_val = parts[1].split(": ")[1]
+                s_val = parts[2].split(": ")[1]
+                r_val = parts[3].split(": ")[1]
+                sl_val = parts[4].split(": ")[1]
+                tp_val = parts[5].split(": ")[1]
+            except:
+                v_val, f_val, s_val, r_val, sl_val, tp_val = "PARSING_FAILED", "ERROR", "ERROR", ai_output, "N/A", "N/A"
+                
+            rows.append([stock, v_val, f_val, s_val, r_val, sl_val, tp_val])
+            time.sleep(4) # Enforces strict safety padding for the 15-RPM free rate cap
+            
+    sheet.update(range_name='A1', values=(headers + rows))
+    return rows
+
+# =====================================================================
+# UNMODIFIED RUNTIME SCAN LOOP EXECUTION SECTION
+# =====================================================================
 stocks_df = pd.read_csv("nse_stocks.csv")
 stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
 
 weekly_buy_scored, monthly_buy_scored = [], []
-coiled_spring_scored = [] # NEW LOGIC LIST
+coiled_spring_scored = [] 
 weekly_sell_signals, sell_signals = [], []
 predictive_up, predictive_down = [] , []
 
-# NEW SPECIAL SEPARATE LOGIC LISTS
 ssf_special_weekly = []
 ssf_special_monthly = []
 ssf_two_weeks_ago = []
@@ -289,7 +359,6 @@ for stock in stocks:
         ticker = yf.Ticker(stock)
         now = datetime.now()
         
-        # --- WEEKLY SCAN ---
         raw_w = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
         w_df = raw_w.copy() if (now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16)) else raw_w.iloc[:-1].copy()
 
@@ -312,20 +381,16 @@ for stock in stocks:
                 
                 info = ticker.info
                 if info.get("marketCap", 0) >= MARKET_CAP_LIMIT and info.get("profitMargins", 0) > 0:
-                    # ORIGINAL LOGIC
                     score = rsi_w.iloc[-1] + ((w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]) * 100
                     weekly_buy_scored.append((stock, score))
                     
-                    # COILED SPRING NEW LOGIC (Calculating Potential Score)
                     dist_from_ssf = (w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]
                     potential_score = rsi_w.iloc[-1] / max(dist_from_ssf, 0.01)
                     coiled_spring_scored.append((stock, potential_score))
 
-            # SEPARATE EXTRA CHECK FOR SSF SPECIAL WEEKLY
             if check_ssf_special_weekly(w_df):
                 ssf_special_weekly.append(stock)
 
-            # SEPARATE EXTRA CHECK FOR SSF TWO WEEKS AGO (Validates exact underlying parameters)
             if rolling_setup_weekly(w_df, 20) and w_df['SSF_50'].iloc[-1] < w_df['SSF_200'].iloc[-1]:
                 if check_ssf_two_weeks_ago_confirmed(w_df):
                     ssf_two_weeks_ago.append(stock)
@@ -335,7 +400,6 @@ for stock in stocks:
                 if prev_h and w_df['Close'].iloc[-1] < w_df['SSF_20'].iloc[-1]:
                     weekly_sell_signals.append(stock)
 
-        # --- MONTHLY SCAN (SYNCHRONIZED SELL LOGIC) ---
         raw_m = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
         m_df = raw_m.iloc[:-1].copy()
         if len(m_df) >= 300: 
@@ -356,11 +420,9 @@ for stock in stocks:
                     score_m = rsi_m.iloc[-1] + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
                     monthly_buy_scored.append((stock, score_m))
             
-            # SEPARATE EXTRA CHECK FOR SSF SPECIAL MONTHLY
             if check_ssf_special_monthly(m_df):
                 ssf_special_monthly.append(stock)
 
-            # SEPARATE EXTRA CHECK FOR SSF TWO MONTHS AGO (Validates exact underlying parameters)
             if rolling_setup_monthly(m_df, 20) and m_df['SSF_50'].iloc[-1] < m_df['SSF_200'].iloc[-1]:
                 if check_ssf_two_months_ago_confirmed(m_df):
                     ssf_two_months_ago.append(stock)
@@ -378,7 +440,6 @@ top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in 
 monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
 top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
 
-# NEW LOGIC SORTING
 coiled_spring_top = [x[0] for x in sorted(coiled_spring_scored, key=lambda x: x[1], reverse=True)[:10]]
 
 predictive_up_list = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
@@ -391,22 +452,20 @@ update_sheet("Top_Monthly", top_monthly)
 update_sheet("Rest_Monthly", rest_monthly)
 update_sheet("Predictive_UP", predictive_up_list)
 update_sheet("Predictive_DOWN", predictive_down_list)
-
-# NEW LOGIC SHEET UPDATE
 update_sheet("Coiled_Spring_Top", coiled_spring_top)
-
-# NEW SSF SPECIAL SHEETS UPDATES
 update_sheet("SSF_Special_Weekly", ssf_special_weekly)
 update_sheet("SSF_Special_Monthly", ssf_special_monthly)
-
-# NEW TWO-WEEKS/MONTHS AGO SHEET UPDATES WITH THE EXPLICIT STRATEGY PARAMETERS
 update_sheet("SSF_Two_Weeks_Ago", ssf_two_weeks_ago)
 update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago)
-
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
-# Telegram
+# =====================================================================
+# RUNNING DEEP MULTI-FACTOR AI INVESTMENTS GENERATION LAYER
+# =====================================================================
+ai_deep_dive_results = run_ssf_two_weeks_ai_deep_dive(ssf_two_weeks_ago)
+
+# Format holistic insights for clean dispatch over Telegram broadcast lines
 msg1 = f"🚀 STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
 msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up_list[:15]}\n\nPredictive DOWN:\n{predictive_down_list[:15]}"
 msg3 = f"➰ COILED SPRING (POTENTIAL):\n{coiled_spring_top}"
@@ -414,6 +473,7 @@ msg4 = f"📈 SSF SPECIAL SIGNALS\n\nSSF Special Weekly:\n{ssf_special_weekly}\n
 msg5 = f"⏰ SSF TWO WEEKS AGO:\n{ssf_two_weeks_ago}"
 msg6 = f"📅 SSF TWO MONTHS AGO:\n{ssf_two_months_ago}"
 
+# Telegram Output Setup
 send_telegram_message(msg1)
 send_telegram_message(msg2)
 send_telegram_message(msg3)
@@ -421,4 +481,22 @@ send_telegram_message(msg4)
 send_telegram_message(msg5)
 send_telegram_message(msg6)
 
-print("Process Complete.")
+# SAFE TELEGRAM PAYLOAD SPLITTER (Protects against 4000-character caps)
+if not ai_deep_dive_results:
+    send_telegram_message("🧠 HOLISTIC AI DEEP DIVE: SSF 2-WEEK BREAKOUTS\n\nNo assets matched the target verification parameters today.")
+else:
+    current_chunk = "🧠 HOLISTIC AI DEEP DIVE: SSF 2-WEEK BREAKOUTS\n\n"
+    for item in ai_deep_dive_results:
+        stock_text = f"• Ticker: *{item[0]}*\n  Verdict: {item[1]}\n  Fundamentals: {item[2]}\n  Sentiment: {item[3]}\n  Reason: {item[4]}\n  SL: {item[5]} | TP: {item[6]}\n\n"
+        
+        # Split chunks at 3800 characters to retain buffer safety zones
+        if len(current_chunk) + len(stock_text) > 3800:
+            send_telegram_message(current_chunk)
+            current_chunk = "🧠 AI DEEP DIVE (CONTINUED):\n\n" + stock_text
+        else:
+            current_chunk += stock_text
+            
+    if current_chunk:
+        send_telegram_message(current_chunk)
+
+print("Process Complete Safely.")
