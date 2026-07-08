@@ -1,4 +1,4 @@
-Name: Run Stock Bot v2
+name: Run Stock Bot v2
 
 on:
   schedule:
@@ -7,10 +7,9 @@ on:
 
 jobs:
   run-bot:
-    runs-runs-on: ubuntu-latest
+    runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout repo
         uses: actions/checkout@v3
 
