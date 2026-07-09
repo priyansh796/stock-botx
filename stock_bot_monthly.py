@@ -12,6 +12,7 @@ from datetime import datetime
 from ta.momentum import RSIIndicator, AwesomeOscillatorIndicator
 from ta.volatility import BollingerBands
 from ta.volume import ChaikinMoneyFlowIndicator 
+from ta.trend import MACD
 
 # --- GOOGLE-GENAI SDK INITIALIZATION ---
 try:
@@ -109,14 +110,18 @@ def check_ssf_two_months_ago_confirmed(df):
     remained_above = (df['Close'].iloc[-2] > df['SSF_50'].iloc[-2]) and (df['Close'].iloc[-1] > df['SSF_50'].iloc[-1])
     return crossed_two_months_ago and remained_above
 
-# --- AUDIT HELPER ---
+# --- AUDIT HELPER (NORMALIZED AWESOME OSCILLATOR IMPLEMENTED) ---
 def get_audit_data(stock_symbol, local_df):
     try:
         local_df = local_df.dropna(subset=['Close', 'High', 'Low'])
         cmf_series = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20).chaikin_money_flow()
         current_cmf = cmf_series.iloc[-1] if not np.isnan(cmf_series.iloc[-1]) else cmf_series.iloc[-2]
+        
         ao_series = AwesomeOscillatorIndicator(high=local_df['High'], low=local_df['Low']).awesome_oscillator()
-        ao = ao_series.iloc[-1] if not np.isnan(ao_series.iloc[-1]) else ao_series.iloc[-2]
+        raw_ao = ao_series.iloc[-1] if not np.isnan(ao_series.iloc[-1]) else ao_series.iloc[-2]
+        current_close = local_df['Close'].iloc[-1]
+        ao = (raw_ao / current_close) * 100
+
         bb = BollingerBands(close=local_df['Close'])
         bw_series = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
         bandwidth = bw_series.iloc[-1] if not np.isnan(bw_series.iloc[-1]) else bw_series.iloc[-2]
@@ -136,7 +141,7 @@ def get_audit_data(stock_symbol, local_df):
         else:
             verdict = "WATCH"
 
-        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.2f} ({mo_label})", f"{current_cmf:.4f} ({inst_label})", verdict, bandwidth, ao, current_cmf]
+        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.4f}% ({mo_label})", f"{current_cmf:.4f} ({inst_label})", verdict, bandwidth, ao, current_cmf]
     except: return ["N/A", "N/A", "N/A", "ERROR", 0, 0, 0]
 
 # --- PREDICTIVE ENGINE ---
@@ -146,7 +151,9 @@ def get_predictive_signal(stock_symbol, local_df):
         cmf_s = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20).chaikin_money_flow()
         current_cmf = cmf_s.iloc[-1] if not np.isnan(cmf_s.iloc[-1]) else cmf_s.iloc[-2]
         ao_s = AwesomeOscillatorIndicator(high=local_df['High'], low=local_df['Low']).awesome_oscillator()
-        ao = ao_s.iloc[-1] if not np.isnan(ao_s.iloc[-1]) else ao_s.iloc[-2]
+        raw_ao = ao_s.iloc[-1] if not np.isnan(ao_s.iloc[-1]) else ao_s.iloc[-2]
+        ao = (raw_ao / local_df['Close'].iloc[-1]) * 100
+        
         bb = BollingerBands(close=local_df['Close'])
         bw_s = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
         bandwidth = bw_s.iloc[-1] if not np.isnan(bw_s.iloc[-1]) else bw_s.iloc[-2]
@@ -178,7 +185,7 @@ client_gspread = gspread.authorize(creds)
 spreadsheet = client_gspread.open(SPREADSHEET_NAME)
 
 def clean_val(val):
-    try: return float(val.split(' ')[0])
+    try: return float(val.split(' ')[0].replace('%', ''))
     except: return 0.0
 
 def update_sheet(sheet_name, data_list):
@@ -194,7 +201,7 @@ def update_sheet(sheet_name, data_list):
                 history[row[0]] = {"rank": idx, "bw": clean_val(row[1]), "ao": clean_val(row[2]), "cmf": clean_val(row[3])}
 
     sheet.clear()
-    headers = [["Stock", "Volatility (Squeeze)", "Momentum (AO)", "Institutional (CMF)", "Rank Delta", "BW Delta", "AO Delta", "CMF Delta", "BOT VERDICT"]]
+    headers = [["Stock", "Volatility (Squeeze)", "Momentum (AO %)", "Institutional (CMF)", "Rank Delta", "BW Delta", "AO Delta", "CMF Delta", "BOT VERDICT"]]
     rows = []
     
     if not data_list:
@@ -219,10 +226,9 @@ def update_sheet(sheet_name, data_list):
 
             rows.append([
                 stock, audit[0], audit[1], audit[2], 
-                r_str, f"{bw_delta:.4f}", f"{ao_delta:.2f}", f"{cmf_delta:.4f}", 
+                r_str, f"{bw_delta:.4f}", f"{ao_delta:.4f}%", f"{cmf_delta:.4f}", 
                 audit[3]
             ])
-        time.sleep(0.5)
     
     sheet.update(range_name='A1', values=(headers + rows))
 
@@ -235,117 +241,135 @@ def simple_update(sheet_name, data_list):
     sheet.update(range_name='A1', values=(headers + rows))
 
 # =====================================================================
-# DEEP MULTI-FACTOR HOLISTIC AI ANALYSIS ENGINE (WITH EXPONENTIAL BACKOFF)
+# HOLISTIC MULTI-INDICATOR BATCH AI PORTFOLIO VALIDATION ENGINE
 # =====================================================================
-def get_holistic_ai_analysis(stock_symbol, w_df, audit_metrics, financial_info):
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key or api_key == "YOUR_FREE_GEMINI_API_KEY":
-        return "VERDICT: API_ERROR | FUNDAMENTALS: Missing Key | SENTIMENT: Error | REASON: Secret variable lookup failed | SL: N/A | TP: N/A"
-
-    ai_client = genai.Client(api_key=api_key)
-    latest_close = w_df['Close'].iloc[-1]
-    
-    pe_ratio = financial_info.get("trailingPE", "N/A")
-    pb_ratio = financial_info.get("priceToBook", "N/A")
-    debt_to_equity = financial_info.get("debtToEquity", "N/A")
-    margin_trend = financial_info.get("profitMargins", "N/A")
-    company_summary = financial_info.get("longBusinessSummary", "No summary profile matching index headers.")
-
-    prompt = f"""
-    You are an elite quantitative asset manager. Conduct a swift investment verification audit on Indian stock {stock_symbol}.
-    - Current Price: INR {latest_close:.2f}
-    - Volatility Squeeze Metric: {audit_metrics[0]}
-    - Oscillator Momentum (AO): {audit_metrics[1]}
-    - Institutional Money Flow (CMF): {audit_metrics[2]}
-    - Trailing PE Ratio: {pe_ratio} | PB Ratio: {pb_ratio} | Debt/Equity: {debt_to_equity} | Profit Margin: {margin_trend}
-    - Business Summary: {company_summary[:300]}...
-
-    Return your output using exactly this inline structural layout format without adding any linebreaks or markdown bolding:
-    VERDICT: [HIGH-CONVICTION-BUY, SPECULATIVE-BUY, or REJECT-HOLD] | FUNDAMENTALS: [Critique] | SENTIMENT: [View] | REASON: [Justification] | SL: [Value] | TP: [Value]
-    """
-    
-    config = types.GenerateContentConfig(
-        temperature=0.1,
-        max_output_tokens=350
-    )
-
-    # --- EXPONENTIAL BACKOFF RETRY SYSTEM ---
-    max_retries = 5
-    base_delay = 10  # Seconds to wait on first 429 barrier catch
-    
-    for attempt in range(max_retries):
-        try:
-            response = ai_client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config=config
-            )
-            return response.text.strip().replace("\n", " ")
-            
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                sleep_time = base_delay * (2 ** attempt)
-                print(f"⚠️ Rate limited on {stock_symbol}. Retrying in {sleep_time} seconds (Attempt {attempt + 1}/{max_retries})...")
-                time.sleep(sleep_time)
-            else:
-                return f"VERDICT: AI_ERROR | FUNDAMENTALS: ERROR | SENTIMENT: ERROR | REASON: {err_str[:80]} | SL: N/A | TP: N/A"
-                
-    return "VERDICT: 429 RESOURCE_EXHAUSTED | FUNDAMENTALS: RATE_LIMITED | SENTIMENT: RATE_LIMITED | REASON: Hit Gemini Free Tier Limit consistently | SL: N/A | TP: N/A"
-
-def run_ssf_two_weeks_ai_deep_dive(ssf_list):
+def run_batch_portfolio_ai_audit(ssf_list):
     if not ssf_list:
-        print("SSF Two Weeks list empty. Skipping deep dive.")
+        print("SSF list empty. Skipping batch AI audit.")
         return []
 
-    try:
-        sheet = spreadsheet.worksheet("AI_SSF_2Weeks_Deep_Dive")
-    except:
-        sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=100, cols=7)
-        
+    try: sheet = spreadsheet.worksheet("AI_SSF_2Weeks_Deep_Dive")
+    except: sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=100, cols=7)
     sheet.clear()
     headers = [["Stock", "AI Final Verdict", "Fundamental Summary Audit", "Market Sentiment Check", "Synthesis Reason", "Stop-Loss", "Take-Profit Target"]]
-    rows = []
     
-    print(f"Executing Holistic AI Audits on {len(ssf_list)} SSF candidates...")
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key or api_key == "YOUR_FREE_GEMINI_API_KEY":
+        sheet.update(range_name='A1', values=[["API Key missing in environment secrets"]])
+        return []
+
+    ai_client = genai.Client(api_key=api_key)
+    compiled_stock_data_context = ""
+    print(f"Gathering holistic profiles for batch extraction of {len(ssf_list)} stocks...")
+    
     for stock in ssf_list:
         ticker = yf.Ticker(stock)
         df = ticker.history(period="1y", interval="1wk")
         if not df.empty:
             close_arr = df['Close'].values
             df['SSF_50'] = super_smoother(close_arr, 50)
-            audit = get_audit_data(stock, df)
             
+            # --- CALCULATE AUXILIARY GLOBAL INDICATORS FOR HOLISTIC AI LAYER ---
+            rsi_vals = RSIIndicator(close=df['Close'], window=14).rsi()
+            rsi_current = rsi_vals.iloc[-1] if not np.isnan(rsi_vals.iloc[-1]) else 50.0
+            
+            macd_obj = MACD(close=df['Close'])
+            macd_line = macd_obj.macd().iloc[-1]
+            macd_signal = macd_obj.macd_signal().iloc[-1]
+            macd_hist = macd_obj.macd_diff().iloc[-1]
+            
+            # Compute Traditional Simple Moving Averages (50 vs 200 EMA structure)
+            ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+            ema_200 = df['Close'].ewm(span=200, adjust=False).mean().iloc[-1]
+            ema_structure = "GOLDEN_CROSS_BULLISH" if ema_50 > ema_200 else "DEATH_CROSS_BEARISH"
+            
+            # Local Support/Resistance calculation via 52-week swing extremes
+            support_52wk = df['Low'].rolling(window=52, min_periods=1).min().iloc[-1]
+            resistance_52wk = df['High'].rolling(window=52, min_periods=1).max().iloc[-1]
+            
+            metrics = get_audit_data(stock, df)
             try: info = ticker.info
             except: info = {}
-                
-            ai_output = get_holistic_ai_analysis(stock, df, audit, info)
             
-            # SAFE REGEX PARSER (Contextual lookahead architecture extraction)
-            v_match = re.search(r"VERDICT:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
-            f_match = re.search(r"FUNDAMENTALS:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
-            s_match = re.search(r"SENTIMENT:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
-            r_match = re.search(r"REASON:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
-            sl_match = re.search(r"SL:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
-            tp_match = re.search(r"TP:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
+            compiled_stock_data_context += f"""
+            === TICKER: {stock} ===
+            - Current Price: INR {df['Close'].iloc[-1]:.2f}
+            - Your SSF System Metrics: Vol Squeeze Bandwidth={metrics[0]} | Normalized AO %={metrics[1]} | CMF Flow={metrics[2]}
+            - Holistic Momentum Indicators: 14-Period RSI={rsi_current:.2f} | MACD Histogram Value={macd_hist:.4f} (Line: {macd_line:.2f} vs Signal: {macd_signal:.2f})
+            - Structural Trend Layer: 50 EMA vs 200 EMA Profile = {ema_structure} (50-EMA: {ema_50:.2f}, 200-EMA: {ema_200:.2f})
+            - Key Technical Levels: 52-Week Local Support = INR {support_52wk:.2f} | 52-Week Structural Resistance = INR {resistance_52wk:.2f}
+            - Fundamental Health: PE={info.get('trailingPE','N/A')} | PB={info.get('priceToBook','N/A')} | Debt/Equity={info.get('debtToEquity','N/A')}
+            - Business Summary Context: {info.get('longBusinessSummary','N/A')[:150]}...
+            """
 
-            v_val = v_match.group(1).strip() if v_match else "PARSING_FAILED"
-            f_val = f_match.group(1).strip() if f_match else "ERROR"
-            s_val = s_match.group(1).strip() if s_match else "ERROR"
-            r_val = r_match.group(1).strip() if r_match else ai_output
-            sl_val = sl_match.group(1).strip() if sl_match else "N/A"
-            tp_val = tp_match.group(1).strip() if tp_match else "N/A"
-                
-            rows.append([stock, v_val, f_val, s_val, r_val, sl_val, tp_val])
+    prompt = f"""
+    You are an elite multi-factor market technician and quantitative risk strategist reviewing Indian Equities swing-trading setups.
+    You have been provided a dataset containing a proprietary SSF crossover signal, cross-referenced with traditional momentum oscillators, structural trend matrices, and key 52-week support/resistance coordinates.
+
+    YOUR MISSION:
+    Act as a complete, independent, holistic technical analyst. Do not simply rubber-stamp the SSF breakout signal. Instead, weigh all indicators collectively to separate valid momentum continuation flags from distribution traps or temporary exhaustions.
+
+    EVALUATION MATRIX GUIDELINES:
+    1. VALID-SIGNAL: Supported by broad metrics. Confirmation includes RSI entering an active acceleration runway (55-68 range, not deeply overbought >75), a positive/rising MACD histogram, price trading safely above the 200 EMA framework, and strong institutional volume backing.
+    2. FAKE-SIGNAL: Occurs when indicators diverge heavily. Examples include price breaking out while the MACD histogram is ticking down, RSI exhibiting bearish divergence at key multi-month overhead resistance levels, or institutional distribution (negative CMF) occurring during the move.
+
+    PORTFOLIO CANDIDATE LAYER CONTEXT:
+    {compiled_stock_data_context}
+
+    Analyze each asset carefully. For EVERY stock provided in the context matrix, you must output a response block using exactly this inline syntax structure without using markdown bolding or arbitrary linebreaks:
+    [STOCK_SYMBOL] | VERDICT: [VALID-SIGNAL or FAKE-SIGNAL] | FUNDAMENTALS: [Brief structural valuation/debt risk review] | SENTIMENT: [Broad indicator confirmation alignment vs multi-factor divergence check] | REASON: [A comprehensive, multi-indicator technical explanation evaluating the RSI, MACD, EMA structure, and your custom metrics collectively] | SL: [Recommended technical stop-loss value] | TP: [Target profit based on the 52-week structural resistance coordinates and macro trend expansion]
+    """
+
+    config = types.GenerateContentConfig(temperature=0.1, max_output_tokens=4000)
+    
+    ai_response_text = ""
+    for attempt in range(4):
+        try:
+            response = ai_client.models.generate_content(
+                model='gemini-2.5-flash', contents=prompt, config=config
+            )
+            ai_response_text = response.text
+            break
+        except Exception as e:
+            if "429" in str(e):
+                time.sleep(15 * (2 ** attempt))
+            else:
+                sheet.update(range_name='A1', values=[[f"AI Error: {str(e)[:50]}"]])
+                return []
+
+    if not ai_response_text:
+        return []
+
+    rows = []
+    lines = ai_response_text.strip().split("\n")
+    for line in lines:
+        if "|" in line:
+            parts = line.split("|")
+            stock_symbol = parts[0].strip().replace("[","").replace("]","")
             
-            # PACE GUARANTEE DELAY
-            time.sleep(4.5) 
-            
-    sheet.update(range_name='A1', values=(headers + rows))
+            v_match = re.search(r"VERDICT:\s*(.*)", parts[1], re.IGNORECASE) if len(parts) > 1 else None
+            f_match = re.search(r"FUNDAMENTALS:\s*(.*)", parts[2], re.IGNORECASE) if len(parts) > 2 else None
+            s_match = re.search(r"SENTIMENT:\s*(.*)", parts[3], re.IGNORECASE) if len(parts) > 3 else None
+            r_match = re.search(r"REASON:\s*(.*)", parts[4], re.IGNORECASE) if len(parts) > 4 else None
+            sl_match = re.search(r"SL:\s*(.*)", parts[5], re.IGNORECASE) if len(parts) > 5 else None
+            tp_match = re.search(r"TP:\s*(.*)", parts[6], re.IGNORECASE) if len(parts) > 6 else None
+
+            rows.append([
+                stock_symbol,
+                v_match.group(1).strip() if v_match else "UNKNOWN",
+                f_match.group(1).strip() if f_match else "N/A",
+                s_match.group(1).strip() if s_match else "N/A",
+                r_match.group(1).strip() if r_match else "Parsed holistic data.",
+                sl_match.group(1).strip() if sl_match else "N/A",
+                tp_match.group(1).strip() if tp_match else "N/A"
+            ])
+
+    if rows:
+        sheet.update(range_name='A1', values=(headers + rows))
     return rows
 
 # =====================================================================
-# SCAN SCANNER ENGINE RUNTIME SCANNERS LOOP
+# CORE PIPELINE RUNTIME SCANNERS LOOP
 # =====================================================================
 stocks_df = pd.read_csv("nse_stocks.csv")
 stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
@@ -440,7 +464,6 @@ for stock in stocks:
                     sell_signals.append(stock)
     except: continue
 
-# Sorting Layers
 weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
 top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in weekly_buy_scored[5:]]
 
@@ -448,11 +471,9 @@ monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True
 top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
 
 coiled_spring_top = [x[0] for x in sorted(coiled_spring_scored, key=lambda x: x[1], reverse=True)[:10]]
-
 predictive_up_list = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
 predictive_down_list = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
 
-# Core Gspread Dispatches
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
@@ -467,12 +488,10 @@ update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago)
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
-# =====================================================================
-# PRODUCTION RUN EXECUTING THE AI DISPATCH METRICS LAYER
-# =====================================================================
-ai_deep_dive_results = run_ssf_two_weeks_ai_deep_dive(ssf_two_weeks_ago)
+# --- EXECUTE THE NEW SINGLE-SHOT ENHANCED HOLISTIC RUN ---
+batch_ai_results = run_batch_portfolio_ai_audit(ssf_two_weeks_ago)
 
-# Broadcast System Comms Packaging
+# Dispatch System Comms over Telegram channels
 msg1 = f"🚀 STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
 msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up_list[:15]}\n\nPredictive DOWN:\n{predictive_down_list[:15]}"
 msg3 = f"➰ COILED SPRING (POTENTIAL):\n{coiled_spring_top}"
@@ -487,19 +506,17 @@ send_telegram_message(msg4)
 send_telegram_message(msg5)
 send_telegram_message(msg6)
 
-if not ai_deep_dive_results:
-    send_telegram_message("🧠 HOLISTIC AI DEEP DIVE: SSF 2-WEEK BREAKOUTS\n\nNo assets matched the target verification parameters today.")
+if not batch_ai_results:
+    send_telegram_message("🧠 HOLISTIC MULTI-FACTOR AI DEEP DIVE\n\nNo valid candidate vectors processed.")
 else:
-    current_chunk = "🧠 HOLISTIC AI DEEP DIVE: SSF 2-WEEK BREAKOUTS\n\n"
-    for item in ai_deep_dive_results:
+    current_chunk = "🧠 HOLISTIC MULTI-FACTOR AI DEEP DIVE\n\n"
+    for item in batch_ai_results:
         stock_text = f"• Ticker: *{item[0]}*\n  Verdict: {item[1]}\n  Fundamentals: {item[2]}\n  Sentiment: {item[3]}\n  Reason: {item[4]}\n  SL: {item[5]} | TP: {item[6]}\n\n"
-        
         if len(current_chunk) + len(stock_text) > 3800:
             send_telegram_message(current_chunk)
-            current_chunk = "🧠 AI DEEP DIVE (CONTINUED):\n\n" + stock_text
+            current_chunk = "🧠 HOLISTIC DEEP DIVE (CONTINUED):\n\n" + stock_text
         else:
             current_chunk += stock_text
-            
     if current_chunk:
         send_telegram_message(current_chunk)
 
