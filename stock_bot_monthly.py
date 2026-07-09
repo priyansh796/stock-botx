@@ -235,52 +235,63 @@ def simple_update(sheet_name, data_list):
     sheet.update(range_name='A1', values=(headers + rows))
 
 # =====================================================================
-# DEEP MULTI-FACTOR HOLISTIC AI ANALYSIS ENGINE (RE-OPTIMIZED)
+# DEEP MULTI-FACTOR HOLISTIC AI ANALYSIS ENGINE (WITH EXPONENTIAL BACKOFF)
 # =====================================================================
 def get_holistic_ai_analysis(stock_symbol, w_df, audit_metrics, financial_info):
-    try:
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key or api_key == "YOUR_FREE_GEMINI_API_KEY":
-            return "VERDICT: API_ERROR | FUNDAMENTALS: Missing Key | SENTIMENT: Error | REASON: Secret variable lookup failed | SL: N/A | TP: N/A"
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key or api_key == "YOUR_FREE_GEMINI_API_KEY":
+        return "VERDICT: API_ERROR | FUNDAMENTALS: Missing Key | SENTIMENT: Error | REASON: Secret variable lookup failed | SL: N/A | TP: N/A"
 
-        ai_client = genai.Client(api_key=api_key)
-        latest_close = w_df['Close'].iloc[-1]
-        
-        pe_ratio = financial_info.get("trailingPE", "N/A")
-        pb_ratio = financial_info.get("priceToBook", "N/A")
-        debt_to_equity = financial_info.get("debtToEquity", "N/A")
-        margin_trend = financial_info.get("profitMargins", "N/A")
-        company_summary = financial_info.get("longBusinessSummary", "No summary profile matching index headers.")
+    ai_client = genai.Client(api_key=api_key)
+    latest_close = w_df['Close'].iloc[-1]
+    
+    pe_ratio = financial_info.get("trailingPE", "N/A")
+    pb_ratio = financial_info.get("priceToBook", "N/A")
+    debt_to_equity = financial_info.get("debtToEquity", "N/A")
+    margin_trend = financial_info.get("profitMargins", "N/A")
+    company_summary = financial_info.get("longBusinessSummary", "No summary profile matching index headers.")
 
-        prompt = f"""
-        You are an elite quantitative asset manager. Conduct a swift investment verification audit on Indian stock {stock_symbol}.
-        - Current Price: INR {latest_close:.2f}
-        - Volatility Squeeze Metric: {audit_metrics[0]}
-        - Oscillator Momentum (AO): {audit_metrics[1]}
-        - Institutional Money Flow (CMF): {audit_metrics[2]}
-        - Trailing PE Ratio: {pe_ratio} | PB Ratio: {pb_ratio} | Debt/Equity: {debt_to_equity} | Profit Margin: {margin_trend}
-        - Business Summary: {company_summary[:300]}...
+    prompt = f"""
+    You are an elite quantitative asset manager. Conduct a swift investment verification audit on Indian stock {stock_symbol}.
+    - Current Price: INR {latest_close:.2f}
+    - Volatility Squeeze Metric: {audit_metrics[0]}
+    - Oscillator Momentum (AO): {audit_metrics[1]}
+    - Institutional Money Flow (CMF): {audit_metrics[2]}
+    - Trailing PE Ratio: {pe_ratio} | PB Ratio: {pb_ratio} | Debt/Equity: {debt_to_equity} | Profit Margin: {margin_trend}
+    - Business Summary: {company_summary[:300]}...
 
-        Return your output using exactly this inline structural layout format without adding any linebreaks or markdown bolding:
-        VERDICT: [HIGH-CONVICTION-BUY, SPECULATIVE-BUY, or REJECT-HOLD] | FUNDAMENTALS: [Critique] | SENTIMENT: [View] | REASON: [Justification] | SL: [Value] | TP: [Value]
-        """
-        
-        config = types.GenerateContentConfig(
-            temperature=0.1,
-            max_output_tokens=350
-        )
+    Return your output using exactly this inline structural layout format without adding any linebreaks or markdown bolding:
+    VERDICT: [HIGH-CONVICTION-BUY, SPECULATIVE-BUY, or REJECT-HOLD] | FUNDAMENTALS: [Critique] | SENTIMENT: [View] | REASON: [Justification] | SL: [Value] | TP: [Value]
+    """
+    
+    config = types.GenerateContentConfig(
+        temperature=0.1,
+        max_output_tokens=350
+    )
 
-        response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-            config=config
-        )
-        return response.text.strip().replace("\n", " ")
-    except Exception as e:
-        err_str = str(e).replace("|", "").replace("\n", " ")
-        if "429" in err_str:
-            return "VERDICT: 429 RESOURCE_EXHAUSTED | FUNDAMENTALS: RATE_LIMITED | SENTIMENT: RATE_LIMITED | REASON: Hit Gemini Free Tier Limit | SL: N/A | TP: N/A"
-        return f"VERDICT: AI_ERROR | FUNDAMENTALS: ERROR | SENTIMENT: ERROR | REASON: {err_str[:80]} | SL: N/A | TP: N/A"
+    # --- EXPONENTIAL BACKOFF RETRY SYSTEM ---
+    max_retries = 5
+    base_delay = 10  # Seconds to wait on first 429 barrier catch
+    
+    for attempt in range(max_retries):
+        try:
+            response = ai_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=config
+            )
+            return response.text.strip().replace("\n", " ")
+            
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                sleep_time = base_delay * (2 ** attempt)
+                print(f"⚠️ Rate limited on {stock_symbol}. Retrying in {sleep_time} seconds (Attempt {attempt + 1}/{max_retries})...")
+                time.sleep(sleep_time)
+            else:
+                return f"VERDICT: AI_ERROR | FUNDAMENTALS: ERROR | SENTIMENT: ERROR | REASON: {err_str[:80]} | SL: N/A | TP: N/A"
+                
+    return "VERDICT: 429 RESOURCE_EXHAUSTED | FUNDAMENTALS: RATE_LIMITED | SENTIMENT: RATE_LIMITED | REASON: Hit Gemini Free Tier Limit consistently | SL: N/A | TP: N/A"
 
 def run_ssf_two_weeks_ai_deep_dive(ssf_list):
     if not ssf_list:
@@ -310,7 +321,7 @@ def run_ssf_two_weeks_ai_deep_dive(ssf_list):
                 
             ai_output = get_holistic_ai_analysis(stock, df, audit, info)
             
-            # SAFE REGEX PARSER (Bypasses markdown or formatting variations)
+            # SAFE REGEX PARSER (Contextual lookahead architecture extraction)
             v_match = re.search(r"VERDICT:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
             f_match = re.search(r"FUNDAMENTALS:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
             s_match = re.search(r"SENTIMENT:\s*(.*?)(?=\s*\||\s*$)", ai_output, re.IGNORECASE)
@@ -327,14 +338,14 @@ def run_ssf_two_weeks_ai_deep_dive(ssf_list):
                 
             rows.append([stock, v_val, f_val, s_val, r_val, sl_val, tp_val])
             
-            # THROTTLING: 4.5s delay keeps workflow safely under 15 requests/min limit
+            # PACE GUARANTEE DELAY
             time.sleep(4.5) 
             
     sheet.update(range_name='A1', values=(headers + rows))
     return rows
 
 # =====================================================================
-# UNMODIFIED RUNTIME SCAN LOOP EXECUTION SECTION
+# SCAN SCANNER ENGINE RUNTIME SCANNERS LOOP
 # =====================================================================
 stocks_df = pd.read_csv("nse_stocks.csv")
 stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
@@ -429,7 +440,7 @@ for stock in stocks:
                     sell_signals.append(stock)
     except: continue
 
-# Sorting
+# Sorting Layers
 weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
 top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in weekly_buy_scored[5:]]
 
@@ -441,7 +452,7 @@ coiled_spring_top = [x[0] for x in sorted(coiled_spring_scored, key=lambda x: x[
 predictive_up_list = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
 predictive_down_list = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
 
-# Update Sheets (Originals)
+# Core Gspread Dispatches
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
@@ -457,11 +468,11 @@ simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
 # =====================================================================
-# RUNNING DEEP MULTI-FACTOR AI INVESTMENTS GENERATION LAYER
+# PRODUCTION RUN EXECUTING THE AI DISPATCH METRICS LAYER
 # =====================================================================
 ai_deep_dive_results = run_ssf_two_weeks_ai_deep_dive(ssf_two_weeks_ago)
 
-# Format holistic insights for clean dispatch over Telegram broadcast lines
+# Broadcast System Comms Packaging
 msg1 = f"🚀 STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
 msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up_list[:15]}\n\nPredictive DOWN:\n{predictive_down_list[:15]}"
 msg3 = f"➰ COILED SPRING (POTENTIAL):\n{coiled_spring_top}"
@@ -469,7 +480,6 @@ msg4 = f"📈 SSF SPECIAL SIGNALS\n\nSSF Special Weekly:\n{ssf_special_weekly}\n
 msg5 = f"⏰ SSF TWO WEEKS AGO:\n{ssf_two_weeks_ago}"
 msg6 = f"📅 SSF TWO MONTHS AGO:\n{ssf_two_months_ago}"
 
-# Telegram Output Setup
 send_telegram_message(msg1)
 send_telegram_message(msg2)
 send_telegram_message(msg3)
@@ -477,7 +487,6 @@ send_telegram_message(msg4)
 send_telegram_message(msg5)
 send_telegram_message(msg6)
 
-# SAFE TELEGRAM PAYLOAD SPLITTER
 if not ai_deep_dive_results:
     send_telegram_message("🧠 HOLISTIC AI DEEP DIVE: SSF 2-WEEK BREAKOUTS\n\nNo assets matched the target verification parameters today.")
 else:
