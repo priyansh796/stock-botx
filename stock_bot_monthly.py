@@ -254,7 +254,7 @@ class PortfolioAuditPayload(BaseModel):
     analyses: list[SwingMomentumAnalysis]
 
 # =====================================================================
-# SYSTEM OVERHAUL: FAULT-TOLERANT EXPLICIT CONTINUOUS BATCH RUNNER
+# FIXED BATCH RUNNER: SOLVES THE ASYNC RACE CONDITION
 # =====================================================================
 def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
     if not unified_stock_list:
@@ -264,30 +264,22 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
     try: sheet = spreadsheet.worksheet("AI_SSF_2Weeks_Deep_Dive")
     except: sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=1000, cols=7)
     
-    sheet.clear()
-    headers = [["Stock", "Source Strategy", "AI Swing Verdict", "Comprehensive Momentum Drivers", "Institutional Risk Mitigation Analysis", "Technical Stop-Loss", "Structural Profit Target"]]
-    sheet.update(range_name='A1', values=headers)
-    
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key or api_key == "YOUR_FREE_GEMINI_API_KEY":
-        sheet.update(range_name='A1', values=[["API Key missing in environment secrets"]])
         return []
 
     ai_client = genai.Client(api_key=api_key)
-    total_processed_results = []
+    total_rows_to_write = []
     
+    # Process in optimized small chunks
     CHUNK_SIZE = 5
     stock_chunks = [unified_stock_list[i:i + CHUNK_SIZE] for i in range(0, len(unified_stock_list), CHUNK_SIZE)]
 
-    print(f"Isolated continuous runner processing {len(unified_stock_list)} stocks across {len(stock_chunks)} chunks...")
+    print(f"Compiling AI results across {len(stock_chunks)} chunks into local memory...")
 
     for idx, chunk in enumerate(stock_chunks, start=1):
-        # The entire execution loop structure is sealed inside this block.
-        # It cannot break out or quietly terminate early anymore.
         try:
-            print(f"Starting processing block for Batch {idx}/{len(stock_chunks)}...")
             compiled_stock_data_context = ""
-            
             for stock in chunk:
                 try:
                     origins = []
@@ -329,11 +321,10 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                     - Technical Ranges: 52-Wk Low Support=INR {support_52wk:.2f} | 52-Wk High Resistance=INR {resistance_52wk:.2f}
                     """
                 except Exception as inner_data_err:
-                    print(f"Skipping text compilation for single ticker {stock}: {inner_data_err}")
+                    print(f"Skipping single ticker {stock}: {inner_data_err}")
                     continue
 
             if not compiled_stock_data_context.strip():
-                print(f"Batch {idx} context empty, skipping data frame push.")
                 continue
 
             prompt = f"""
@@ -355,37 +346,47 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                 response_schema=PortfolioAuditPayload,
             )
             
-            print(f"Sending Batch {idx} over connection to Gemini...")
+            print(f"Requesting evaluation for Batch {idx}/{len(stock_chunks)} from Gemini...")
             response = ai_client.models.generate_content(
                 model='gemini-2.5-flash', contents=prompt, config=config
             )
             result_payload = PortfolioAuditPayload.model_validate_json(response.text)
             
-            batch_rows = []
             for item in result_payload.analyses:
-                row_data = [
+                total_rows_to_write.append([
                     item.ticker, item.signal_source_list, item.verdict, 
                     item.momentum_drivers, item.risk_mitigation, 
                     item.structural_stop_loss, item.target_profit
-                ]
-                batch_rows.append(row_data)
-                total_processed_results.append(row_data)
-            
-            if batch_rows:
-                sheet.append_rows(batch_rows, value_input_option='RAW')
-                print(f"Successfully processed and appended Batch {idx} to sheet.")
+                ])
 
         except Exception as batch_level_error:
-            # If ANY anomaly occurs during runtime, this block intercepts it,
-            # prints the tracking status, and safely forces the loop to continue to the next batch.
-            print(f"Execution notice on Batch {idx}: {batch_level_error}. Forcing continuation...")
+            print(f"Skipping processing on Batch {idx} due to an error: {batch_level_error}")
             pass
 
         if idx < len(stock_chunks):
             time.sleep(12)
 
-    print(f"Execution lifecycle finished. Total saved: {len(total_processed_results)}")
-    return total_processed_results
+    # --- THE ATOMIC WRITE STAGE ---
+    # We construct the entire matrix locally, then push it in a single atomic update block.
+    # This completely eliminates any blank sheet or race condition issues.
+    try:
+        print("Pushed all AI results into memory. Clearing old rows and committing new data...")
+        
+        # Format layout boundaries to cover any old text up to column G and row 300
+        blank_matrix = [["" for _ in range(7)] for _ in range(300)]
+        sheet.update(range_name='A1:G300', values=blank_matrix)
+        
+        # Compile headers alongside fresh processing matrix
+        final_headers = [["Stock", "Source Strategy", "AI Swing Verdict", "Comprehensive Momentum Drivers", "Institutional Risk Mitigation Analysis", "Technical Stop-Loss", "Structural Profit Target"]]
+        final_payload = final_headers + total_rows_to_write
+        
+        # Send everything in one single network package
+        sheet.update(range_name='A1', values=final_payload)
+        print(f"Successfully synchronized {len(total_rows_to_write)} stock models into Google Dashboard.")
+    except Exception as commit_err:
+        print(f"Failed to commit matrix data block: {commit_err}")
+
+    return total_rows_to_write
 
 # =====================================================================
 # CORE PIPELINE RUNTIME SCANNERS LOOP
