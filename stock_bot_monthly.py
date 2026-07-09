@@ -242,25 +242,25 @@ def simple_update(sheet_name, data_list):
     rows = [[s] for s in data_list]
     sheet.update(range_name='A1', values=(headers + rows))
 
-# --- DESIGNED STRUCTURAL MAPPING BLUEPRINT ---
+# --- DESIGNED STRUCTURAL MAPPING BLUEPRINT (QUANT SCORING EDITION) ---
 class SwingMomentumAnalysis(BaseModel):
     ticker: str = Field(description="The ticker symbol of the stock")
     signal_source_list: str = Field(description="Strategy sheet origin list tags")
-    verdict: str = Field(description="MUST BE EXACTLY ONE OF: 'SUSTAINED-MOMENTUM' or 'FAKE-BREAKOUT-TRAP'")
-    momentum_drivers: str = Field(description="Comprehensive technical analysis breakdown combining current price velocity trends, RSI runway space, and relative volume confirmation details vs 20-week averages.")
-    risk_mitigation: str = Field(description="Exhaustive evaluation of institutional flow metrics (CMF/OBV trends) explaining why velocity will hold structural support or fail right back beneath the SSF 50 line.")
-    structural_stop_loss: str = Field(description="Logical protection price floor coordinate")
-    target_profit: str = Field(description="Calculated logical profit taking target level")
+    technical_score: int = Field(description="An integer score from 0 to 100 evaluating the alignment of the technical breakout indicators.")
+    momentum_drivers: str = Field(description="Trend catalyst breakdown evaluating price expansion velocity, RSI expansion room, and comparative order flow mechanics.")
+    risk_mitigation: str = Field(description="Liquidity profile analysis tracking volume trends, Chaikin Money Flow, and On Balance Volume configurations.")
+    structural_stop_loss: str = Field(description="Dynamic risk protection stop coordinate placed at structural support nodes.")
+    target_profit: str = Field(description="Calculated technical resistance target level based on trend extensions.")
 
 class PortfolioAuditPayload(BaseModel):
     analyses: list[SwingMomentumAnalysis]
 
 # =====================================================================
-# SYSTEM DIAGNOSTIC MODEL: HANDLES 35 STOCKS + ALIGNMENT MISMATCH AUDIT
+# SYSTEM DIAGNOSTIC MODEL: EXPERT SWING SCORING INTERACTION PIPELINE
 # =====================================================================
 def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
     print("\n========================================================")
-    print("DEBUGGER: ENTERING QUOTA-OPTIMIZED AI ENGINE")
+    print("DEBUGGER: ENTERING EXPERT SWING SCORING ENGINE")
     print(f"DEBUGGER: Total unique stocks passed into pool: {len(unified_stock_list)}")
     print("========================================================\n")
 
@@ -281,7 +281,6 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
     ai_client = genai.Client(api_key=api_key)
     all_final_rows = []
     
-    # Large chunk sizing to protect the 20 requests per day restriction
     CHUNK_SIZE = 35
     stock_chunks = [unified_stock_list[i:i + CHUNK_SIZE] for i in range(0, len(unified_stock_list), CHUNK_SIZE)]
     print(f"DEBUGGER: Compressed pool into {len(stock_chunks)} large batches (Size: {CHUNK_SIZE}) to save daily quota.")
@@ -343,16 +342,19 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                 continue
 
             prompt = f"""
-            You are an elite institutional quantitative swing trader and order-flow specialist.
-            Analyze this multi-strategy breakout candidates portfolio payload generated via our SSF crossover scanners.
-            Your main goal is to protect capital by separating true momentum stocks from fake breakout retail traps.
+            You are an elite, highly qualified professional swing trader operating with exceptional discipline.
+            Analyze this multi-strategy breakout portfolio dataset generated via our quantitative filters.
+            Your role is to score each setup based on how clean the momentum indicators and volume profiles align.
 
             CRITICAL STRUCTURAL INSTRUCTION: 
-            You must evaluate and return a corresponding data object inside your 'analyses' response list for EVERY SINGLE TICKER requested below. Do not leave out, combine, or drop any tickers due to payload constraints.
+            You must evaluate and return a corresponding data object inside your 'analyses' response list for EVERY SINGLE TICKER requested below. Do not leave out, combine, or drop any tickers.
 
-            STRICT TRADING EVALUATION PROTOCOLS:
-            1. SUSTAINED-MOMENTUM: Valid breakout setup. Price action expansion is backed by massive institutional accumulation (Relative Volume Ratio >= 1.50x), OBV shows distinct uptrend accumulation, CMF is positive (>0.05), and RSI has open runway space.
-            2. FAKE-BREAKOUT-TRAP: Extreme risk of immediate failure. If price crossed above the SSF line but Relative Volume is thin (<1.0x), OBV is declining, or money flow is negative, identify this as a trap likely to break right back below the SSF 50 line.
+            SCORING CRITERIA (0 - 100 Scale):
+            Assign an integrated score out of 100 based on the balance of technical signals:
+            - 85 to 100: Exceptional setups. Perfect confluence of high volume ratios, strong positive CMF, healthy RSI runway, and solid OBV accumulation trends.
+            - 65 to 84: Good, reliable swing structures. Solid setups but might have minor overhead resistance or moderate relative accumulation trends.
+            - 45 to 64: Speculative breakouts. Playable but displaying clear signs of divergence (e.g., price crossing line, but relative volume is flat or CMF is weak/neutral).
+            - Below 45: Flawed technical setups. Outflow of volume, poor momentum trends, or weak indicator configurations. Low conviction.
 
             RAW PORTFOLIO PAYLOAD TO PROCESS:
             {compiled_stock_data_context}
@@ -388,7 +390,7 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
             parsed_count_this_batch = 0
             for item in result_payload.analyses:
                 all_final_rows.append([
-                    item.ticker, item.signal_source_list, item.verdict, 
+                    item.ticker, item.signal_source_list, item.technical_score, 
                     item.momentum_drivers, item.risk_mitigation, 
                     item.structural_stop_loss, item.target_profit
                 ])
@@ -407,7 +409,7 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
         print(f"\nDEBUGGER: Pushing entire aggregated collection ({len(all_final_rows)} rows) to Google Sheets...")
         sheet.clear()
         time.sleep(4)
-        headers = [["Stock", "Source Strategy", "AI Swing Verdict", "Comprehensive Momentum Drivers", "Institutional Risk Mitigation Analysis", "Technical Stop-Loss", "Structural Profit Target"]]
+        headers = [["Stock", "Source Strategy", "Technical Score (/100)", "Comprehensive Momentum Drivers", "Institutional Risk Mitigation Analysis", "Technical Stop-Loss", "Structural Profit Target"]]
         final_sheet_matrix = headers + all_final_rows
         sheet.update(range_name='A1', values=final_sheet_matrix)
         print("DEBUGGER SUCCESS: Synchronization completed flawlessly.")
