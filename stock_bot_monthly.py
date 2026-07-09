@@ -135,13 +135,13 @@ def get_audit_data(stock_symbol, local_df):
         inst_label = "BUYING" if current_cmf > 0.05 else ("EXITING" if current_cmf < -0.05 else "NEUTRAL")
         
         if bandwidth < 0.18 and ao > 0 and current_cmf > 0.05:
-            verdict = "⭐ EXCELLENT"
+            get_verdict = "⭐ EXCELLENT"
         elif current_cmf < -0.07:
-            verdict = "⛔ DANGEROUS"
+            get_verdict = "⛔ DANGEROUS"
         else:
-            verdict = "WATCH"
+            get_verdict = "WATCH"
 
-        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.4f}% ({mo_label})", f"{current_cmf:.4f} ({inst_label})", verdict, bandwidth, ao, current_cmf]
+        return [f"{bandwidth:.4f} ({sq_label})", f"{ao:.4f}% ({mo_label})", f"{current_cmf:.4f} ({inst_label})", get_verdict, bandwidth, ao, current_cmf]
     except: return ["N/A", "N/A", "N/A", "ERROR", 0, 0, 0]
 
 # --- PREDICTIVE ENGINE ---
@@ -201,6 +201,7 @@ def update_sheet(sheet_name, data_list):
                 history[row[0]] = {"rank": idx, "bw": clean_val(row[1]), "ao": clean_val(row[2]), "cmf": clean_val(row[3])}
 
     sheet.clear()
+    time.sleep(2)
     headers = [["Stock", "Volatility (Squeeze)", "Momentum (AO %)", "Institutional (CMF)", "Rank Delta", "BW Delta", "AO Delta", "CMF Delta", "BOT VERDICT"]]
     rows = []
     
@@ -236,6 +237,7 @@ def simple_update(sheet_name, data_list):
     try: sheet = spreadsheet.worksheet(sheet_name)
     except: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
     sheet.clear()
+    time.sleep(2)
     headers = [["Stock"]]
     rows = [[s] for s in data_list]
     sheet.update(range_name='A1', values=(headers + rows))
@@ -254,30 +256,42 @@ class PortfolioAuditPayload(BaseModel):
     analyses: list[SwingMomentumAnalysis]
 
 # =====================================================================
-# FIXED BATCH RUNNER: SOLVES THE ASYNC RACE CONDITION
+# DEBUG ENHANCED MODEL: SAVES TO MEMORY WITH INTENSE VERBOSE LOGGING
 # =====================================================================
 def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
+    print("\n========================================================")
+    print("DEBUGGER: ENTERING AI AUDIT ENGINE")
+    print(f"DEBUGGER: Total unique stocks passed into pool: {len(unified_stock_list)}")
+    print(f"DEBUGGER: Stocks list to process: {unified_stock_list}")
+    print("========================================================\n")
+
     if not unified_stock_list:
-        print("Unified pool empty. Exiting.")
+        print("DEBUGGER WARNING: Unified pool is completely empty. Exiting function immediately.")
         return []
 
-    try: sheet = spreadsheet.worksheet("AI_SSF_2Weeks_Deep_Dive")
-    except: sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=1000, cols=7)
+    try: 
+        sheet = spreadsheet.worksheet("AI_SSF_2Weeks_Deep_Dive")
+        print("DEBUGGER: Successfully connected to target sheet 'AI_SSF_2Weeks_Deep_Dive'")
+    except Exception as e: 
+        print(f"DEBUGGER: Target sheet not found, attempting creation. Error: {e}")
+        sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=1000, cols=7)
     
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key or api_key == "YOUR_FREE_GEMINI_API_KEY":
+        print("DEBUGGER CRITICAL ERROR: GEMINI_API_KEY is not defined or using placeholder string in system environment secrets!")
         return []
 
     ai_client = genai.Client(api_key=api_key)
-    total_rows_to_write = []
+    all_final_rows = []
     
-    # Process in optimized small chunks
     CHUNK_SIZE = 5
     stock_chunks = [unified_stock_list[i:i + CHUNK_SIZE] for i in range(0, len(unified_stock_list), CHUNK_SIZE)]
-
-    print(f"Compiling AI results across {len(stock_chunks)} chunks into local memory...")
+    print(f"DEBUGGER: Split pool into {len(stock_chunks)} distinct batches of size {CHUNK_SIZE} for Gemini handling.")
 
     for idx, chunk in enumerate(stock_chunks, start=1):
+        print(f"\n--- DEBUGGER: STARTING BATCH {idx}/{len(stock_chunks)} ---")
+        print(f"DEBUGGER: Tickers in this batch: {chunk}")
+        
         try:
             compiled_stock_data_context = ""
             for stock in chunk:
@@ -288,9 +302,12 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                     if stock in ssf_2w: origins.append("SSF_Two_Weeks_Ago")
                     source_str = ", ".join(origins) if origins else "Runtime_Scanner_Pool"
 
+                    print(f"  -> DEBUGGER: Fetching historicals for {stock} via yfinance...")
                     ticker = yf.Ticker(stock)
                     df = ticker.history(period="1y", interval="1wk")
-                    if df.empty: continue
+                    if df.empty: 
+                        print(f"  -> DEBUGGER WARNING: Historical data frame returned empty for {stock}. Skipping.")
+                        continue
                         
                     close_arr = df['Close'].values
                     df['SSF_50'] = super_smoother(close_arr, 50)
@@ -321,10 +338,11 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                     - Technical Ranges: 52-Wk Low Support=INR {support_52wk:.2f} | 52-Wk High Resistance=INR {resistance_52wk:.2f}
                     """
                 except Exception as inner_data_err:
-                    print(f"Skipping single ticker {stock}: {inner_data_err}")
+                    print(f"  -> DEBUGGER EXCEPTION: Failed compiling telemetry for single ticker {stock}. Error details: {inner_data_err}")
                     continue
 
             if not compiled_stock_data_context.strip():
+                print(f"DEBUGGER WARNING: Batch {idx} context is completely blank after market fetch phase. Skipping API call.")
                 continue
 
             prompt = f"""
@@ -346,47 +364,54 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                 response_schema=PortfolioAuditPayload,
             )
             
-            print(f"Requesting evaluation for Batch {idx}/{len(stock_chunks)} from Gemini...")
+            print(f"DEBUGGER: Dispatching connection payloads for Batch {idx} to Gemini flash endpoints...")
             response = ai_client.models.generate_content(
                 model='gemini-2.5-flash', contents=prompt, config=config
             )
+            
+            print(f"DEBUGGER: Raw connection text payload received back from Gemini endpoint for Batch {idx}. Parsing JSON matrix...")
             result_payload = PortfolioAuditPayload.model_validate_json(response.text)
             
+            parsed_count_this_batch = 0
             for item in result_payload.analyses:
-                total_rows_to_write.append([
+                all_final_rows.append([
                     item.ticker, item.signal_source_list, item.verdict, 
                     item.momentum_drivers, item.risk_mitigation, 
                     item.structural_stop_loss, item.target_profit
                 ])
+                parsed_count_this_batch += 1
+            print(f"DEBUGGER SUCCESS: Collected {parsed_count_this_batch} analyzed rows into local system memory matrix for Batch {idx}.")
 
         except Exception as batch_level_error:
-            print(f"Skipping processing on Batch {idx} due to an error: {batch_level_error}")
+            print(f"DEBUGGER CRITICAL ERROR: Execution broke completely on Batch {idx}. Exception dump: {batch_level_error}")
             pass
 
         if idx < len(stock_chunks):
+            print(f"DEBUGGER: Entering standard anti-throttling countdown (12 seconds) before unlocking next batch call...")
             time.sleep(12)
 
-    # --- THE ATOMIC WRITE STAGE ---
-    # We construct the entire matrix locally, then push it in a single atomic update block.
-    # This completely eliminates any blank sheet or race condition issues.
+    # --- ATOMIC WRITE ACTION ---
+    print("\n========================================================")
+    print("DEBUGGER: EXECUTING SPREADSHEET UPDATE WRAP-UP PHASE")
+    print(f"DEBUGGER: Total rows waiting in memory array to write: {len(all_final_rows)}")
+    print("========================================================\n")
+    
     try:
-        print("Pushed all AI results into memory. Clearing old rows and committing new data...")
+        print("DEBUGGER: Wiping target worksheet contents completely clean...")
+        sheet.clear()
+        print("DEBUGGER: Complete wipe done. Sleeping 4 seconds to force cloud updates to finalize...")
+        time.sleep(4)
         
-        # Format layout boundaries to cover any old text up to column G and row 300
-        blank_matrix = [["" for _ in range(7)] for _ in range(300)]
-        sheet.update(range_name='A1:G300', values=blank_matrix)
+        headers = [["Stock", "Source Strategy", "AI Swing Verdict", "Comprehensive Momentum Drivers", "Institutional Risk Mitigation Analysis", "Technical Stop-Loss", "Structural Profit Target"]]
+        final_sheet_matrix = headers + all_final_rows
         
-        # Compile headers alongside fresh processing matrix
-        final_headers = [["Stock", "Source Strategy", "AI Swing Verdict", "Comprehensive Momentum Drivers", "Institutional Risk Mitigation Analysis", "Technical Stop-Loss", "Structural Profit Target"]]
-        final_payload = final_headers + total_rows_to_write
-        
-        # Send everything in one single network package
-        sheet.update(range_name='A1', values=final_payload)
-        print(f"Successfully synchronized {len(total_rows_to_write)} stock models into Google Dashboard.")
-    except Exception as commit_err:
-        print(f"Failed to commit matrix data block: {commit_err}")
+        print(f"DEBUGGER: Sending continuous block write structure ({len(final_sheet_matrix)} elements matrix) to cell coordinate A1...")
+        sheet.update(range_name='A1', values=final_sheet_matrix)
+        print("DEBUGGER SUCCESS: Cloud matrix sync complete. Exiting cleanly.")
+    except Exception as e:
+        print(f"DEBUGGER FATAL WRITE ERROR: Script crashed during final push phase to Google sheets. Exception: {e}")
 
-    return total_rows_to_write
+    return all_final_rows
 
 # =====================================================================
 # CORE PIPELINE RUNTIME SCANNERS LOOP
