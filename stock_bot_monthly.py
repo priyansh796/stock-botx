@@ -11,7 +11,7 @@ import requests
 from datetime import datetime
 from ta.momentum import RSIIndicator, AwesomeOscillatorIndicator
 from ta.volatility import BollingerBands
-from ta.volume import ChaikinMoneyFlowIndicator 
+from ta.volume import ChaikinMoneyFlowIndicator, OnBalanceVolumeIndicator
 from ta.trend import MACD
 
 # --- GOOGLE-GENAI SDK INITIALIZATION ---
@@ -110,7 +110,7 @@ def check_ssf_two_months_ago_confirmed(df):
     remained_above = (df['Close'].iloc[-2] > df['SSF_50'].iloc[-2]) and (df['Close'].iloc[-1] > df['SSF_50'].iloc[-1])
     return crossed_two_months_ago and remained_above
 
-# --- AUDIT HELPER (NORMALIZED AWESOME OSCILLATOR IMPLEMENTED) ---
+# --- AUDIT HELPER (NORMALIZED AWESOME OSCILLATOR) ---
 def get_audit_data(stock_symbol, local_df):
     try:
         local_df = local_df.dropna(subset=['Close', 'High', 'Low'])
@@ -241,7 +241,7 @@ def simple_update(sheet_name, data_list):
     sheet.update(range_name='A1', values=(headers + rows))
 
 # =====================================================================
-# HOLISTIC MULTI-INDICATOR BATCH AI PORTFOLIO VALIDATION ENGINE
+# HOLISTIC MULTI-INDICATOR VOLUME BREAKOUT ENGINE
 # =====================================================================
 def run_batch_portfolio_ai_audit(ssf_list):
     if not ssf_list:
@@ -260,7 +260,7 @@ def run_batch_portfolio_ai_audit(ssf_list):
 
     ai_client = genai.Client(api_key=api_key)
     compiled_stock_data_context = ""
-    print(f"Gathering holistic profiles for batch extraction of {len(ssf_list)} stocks...")
+    print(f"Gathering comprehensive profiles for batch extraction of {len(ssf_list)} stocks...")
     
     for stock in ssf_list:
         ticker = yf.Ticker(stock)
@@ -269,21 +269,26 @@ def run_batch_portfolio_ai_audit(ssf_list):
             close_arr = df['Close'].values
             df['SSF_50'] = super_smoother(close_arr, 50)
             
-            # --- CALCULATE AUXILIARY GLOBAL INDICATORS FOR HOLISTIC AI LAYER ---
+            # --- EXTENDED ADVANCED VOLUME PROCESSING ENGINE ---
+            current_volume = df['Volume'].iloc[-1]
+            avg_volume_20 = df['Volume'].rolling(window=20).mean().iloc[-1]
+            volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
+            
+            obv_indicator = OnBalanceVolumeIndicator(close=df['Close'], volume=df['Volume'])
+            obv_series = obv_indicator.on_balance_volume()
+            obv_trend = "ACCUMULATION_UPTREND" if obv_series.iloc[-1] > obv_series.rolling(10).mean().iloc[-1] else "DISTRIBUTION_DOWNTREND"
+            
+            # --- AUXILIARY INDICATORS ---
             rsi_vals = RSIIndicator(close=df['Close'], window=14).rsi()
             rsi_current = rsi_vals.iloc[-1] if not np.isnan(rsi_vals.iloc[-1]) else 50.0
             
             macd_obj = MACD(close=df['Close'])
-            macd_line = macd_obj.macd().iloc[-1]
-            macd_signal = macd_obj.macd_signal().iloc[-1]
             macd_hist = macd_obj.macd_diff().iloc[-1]
             
-            # Compute Traditional Simple Moving Averages (50 vs 200 EMA structure)
             ema_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
             ema_200 = df['Close'].ewm(span=200, adjust=False).mean().iloc[-1]
-            ema_structure = "GOLDEN_CROSS_BULLISH" if ema_50 > ema_200 else "DEATH_CROSS_BEARISH"
+            ema_structure = "GOLDEN_CROSS" if ema_50 > ema_200 else "DEATH_CROSS"
             
-            # Local Support/Resistance calculation via 52-week swing extremes
             support_52wk = df['Low'].rolling(window=52, min_periods=1).min().iloc[-1]
             resistance_52wk = df['High'].rolling(window=52, min_periods=1).max().iloc[-1]
             
@@ -295,29 +300,27 @@ def run_batch_portfolio_ai_audit(ssf_list):
             === TICKER: {stock} ===
             - Current Price: INR {df['Close'].iloc[-1]:.2f}
             - Your SSF System Metrics: Vol Squeeze Bandwidth={metrics[0]} | Normalized AO %={metrics[1]} | CMF Flow={metrics[2]}
-            - Holistic Momentum Indicators: 14-Period RSI={rsi_current:.2f} | MACD Histogram Value={macd_hist:.4f} (Line: {macd_line:.2f} vs Signal: {macd_signal:.2f})
-            - Structural Trend Layer: 50 EMA vs 200 EMA Profile = {ema_structure} (50-EMA: {ema_50:.2f}, 200-EMA: {ema_200:.2f})
-            - Key Technical Levels: 52-Week Local Support = INR {support_52wk:.2f} | 52-Week Structural Resistance = INR {resistance_52wk:.2f}
-            - Fundamental Health: PE={info.get('trailingPE','N/A')} | PB={info.get('priceToBook','N/A')} | Debt/Equity={info.get('debtToEquity','N/A')}
-            - Business Summary Context: {info.get('longBusinessSummary','N/A')[:150]}...
+            - VOLUME PROFILE MATRIX: Relative Volume Ratio={volume_ratio:.2f}x | OBV Volume Trend Structure={obv_trend} | Net Current Volume={current_volume} (vs 20-Wk Avg: {avg_volume_20:.0f})
+            - Technical Multi-Factors: 14-Period RSI={rsi_current:.2f} | MACD Histogram={macd_hist:.4f} | EMA Setup={ema_structure}
+            - Technical Coordinates: 52-Week Low Support=INR {support_52wk:.2f} | 52-Week High Resistance=INR {resistance_52wk:.2f}
+            - Valuation: PE={info.get('trailingPE','N/A')} | PB={info.get('priceToBook','N/A')} | Debt/Equity={info.get('debtToEquity','N/A')}
+            - Summary Context: {info.get('longBusinessSummary','N/A')[:120]}...
             """
 
     prompt = f"""
-    You are an elite multi-factor market technician and quantitative risk strategist reviewing Indian Equities swing-trading setups.
-    You have been provided a dataset containing a proprietary SSF crossover signal, cross-referenced with traditional momentum oscillators, structural trend matrices, and key 52-week support/resistance coordinates.
+    You are an elite quantitative multi-factor market technician and institutional order-flow auditor.
+    You have been handed a portfolio context matrix of breakout candidates generated by an SSF crossover system.
+    Your mission is to perform a comprehensive cross-examination of price action against volume structure to deliver a clear trade conviction call.
 
-    YOUR MISSION:
-    Act as a complete, independent, holistic technical analyst. Do not simply rubber-stamp the SSF breakout signal. Instead, weigh all indicators collectively to separate valid momentum continuation flags from distribution traps or temporary exhaustions.
+    STRICT CONVICTION FILTER RULES:
+    1. HIGH-CONVICTION-GO: The breakout is valid. Price action is validated by high volume (Relative Volume Ratio >= 1.50x), OBV shows accumulation, CMF is strongly positive (>0.05), and RSI has an open runway (<70).
+    2. NO-GO-TRAP: Reject the trade instantly. If price is breaking up but Relative Volume is low (<1.0x), OBV is trending down, or CMF is negative, class this as an institutional distribution trap designed to suck in retail liquidity.
 
-    EVALUATION MATRIX GUIDELINES:
-    1. VALID-SIGNAL: Supported by broad metrics. Confirmation includes RSI entering an active acceleration runway (55-68 range, not deeply overbought >75), a positive/rising MACD histogram, price trading safely above the 200 EMA framework, and strong institutional volume backing.
-    2. FAKE-SIGNAL: Occurs when indicators diverge heavily. Examples include price breaking out while the MACD histogram is ticking down, RSI exhibiting bearish divergence at key multi-month overhead resistance levels, or institutional distribution (negative CMF) occurring during the move.
-
-    PORTFOLIO CANDIDATE LAYER CONTEXT:
+    PORTFOLIO CANDIDATE DATA LAYER:
     {compiled_stock_data_context}
 
-    Analyze each asset carefully. For EVERY stock provided in the context matrix, you must output a response block using exactly this inline syntax structure without using markdown bolding or arbitrary linebreaks:
-    [STOCK_SYMBOL] | VERDICT: [VALID-SIGNAL or FAKE-SIGNAL] | FUNDAMENTALS: [Brief structural valuation/debt risk review] | SENTIMENT: [Broad indicator confirmation alignment vs multi-factor divergence check] | REASON: [A comprehensive, multi-indicator technical explanation evaluating the RSI, MACD, EMA structure, and your custom metrics collectively] | SL: [Recommended technical stop-loss value] | TP: [Target profit based on the 52-week structural resistance coordinates and macro trend expansion]
+    For EVERY stock provided, output your technical trade decision using exactly this format without markdown bolding or linebreaks:
+    [STOCK_SYMBOL] | VERDICT: [HIGH-CONVICTION-GO or NO-GO-TRAP] | FUNDAMENTALS: [Valuation/Debt critique] | SENTIMENT: [Volume-to-Price alignment check] | REASON: [A comprehensive multi-indicator defense analyzing how the Relative Volume, OBV trend, CMF, and RSI collectively confirm or invalidate the trade signal] | SL: [Technical stop loss] | TP: [Target profit based on chart structural resistance coordinates]
     """
 
     config = types.GenerateContentConfig(temperature=0.1, max_output_tokens=4000)
@@ -359,7 +362,7 @@ def run_batch_portfolio_ai_audit(ssf_list):
                 v_match.group(1).strip() if v_match else "UNKNOWN",
                 f_match.group(1).strip() if f_match else "N/A",
                 s_match.group(1).strip() if s_match else "N/A",
-                r_match.group(1).strip() if r_match else "Parsed holistic data.",
+                r_match.group(1).strip() if r_match else "Processed.",
                 sl_match.group(1).strip() if sl_match else "N/A",
                 tp_match.group(1).strip() if tp_match else "N/A"
             ])
@@ -488,7 +491,7 @@ update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago)
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
-# --- EXECUTE THE NEW SINGLE-SHOT ENHANCED HOLISTIC RUN ---
+# --- CALL THE NEW BATCH AI RUNTIME MATRIX ---
 batch_ai_results = run_batch_portfolio_ai_audit(ssf_two_weeks_ago)
 
 # Dispatch System Comms over Telegram channels
@@ -507,14 +510,14 @@ send_telegram_message(msg5)
 send_telegram_message(msg6)
 
 if not batch_ai_results:
-    send_telegram_message("🧠 HOLISTIC MULTI-FACTOR AI DEEP DIVE\n\nNo valid candidate vectors processed.")
+    send_telegram_message("🧠 HOLISTIC MULTI-FACTOR VOLUME AUDIT\n\nNo active breakout candidates processed.")
 else:
-    current_chunk = "🧠 HOLISTIC MULTI-FACTOR AI DEEP DIVE\n\n"
+    current_chunk = "🧠 VOLUME-CONFIRMED PORTFOLIO AUDIT\n\n"
     for item in batch_ai_results:
         stock_text = f"• Ticker: *{item[0]}*\n  Verdict: {item[1]}\n  Fundamentals: {item[2]}\n  Sentiment: {item[3]}\n  Reason: {item[4]}\n  SL: {item[5]} | TP: {item[6]}\n\n"
         if len(current_chunk) + len(stock_text) > 3800:
             send_telegram_message(current_chunk)
-            current_chunk = "🧠 HOLISTIC DEEP DIVE (CONTINUED):\n\n" + stock_text
+            current_chunk = "🧠 VOLUME DEEP DIVE (CONTINUED):\n\n" + stock_text
         else:
             current_chunk += stock_text
     if current_chunk:
