@@ -256,13 +256,12 @@ class PortfolioAuditPayload(BaseModel):
     analyses: list[SwingMomentumAnalysis]
 
 # =====================================================================
-# DEBUG ENHANCED MODEL: SAVES TO MEMORY WITH INTENSE VERBOSE LOGGING
+# SYSTEM DIAGNOSTIC MODEL: HANDLES 35 STOCKS + ALIGNMENT MISMATCH AUDIT
 # =====================================================================
 def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
     print("\n========================================================")
-    print("DEBUGGER: ENTERING AI AUDIT ENGINE")
+    print("DEBUGGER: ENTERING QUOTA-OPTIMIZED AI ENGINE")
     print(f"DEBUGGER: Total unique stocks passed into pool: {len(unified_stock_list)}")
-    print(f"DEBUGGER: Stocks list to process: {unified_stock_list}")
     print("========================================================\n")
 
     if not unified_stock_list:
@@ -271,29 +270,30 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
 
     try: 
         sheet = spreadsheet.worksheet("AI_SSF_2Weeks_Deep_Dive")
-        print("DEBUGGER: Successfully connected to target sheet 'AI_SSF_2Weeks_Deep_Dive'")
     except Exception as e: 
-        print(f"DEBUGGER: Target sheet not found, attempting creation. Error: {e}")
         sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=1000, cols=7)
     
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key or api_key == "YOUR_FREE_GEMINI_API_KEY":
-        print("DEBUGGER CRITICAL ERROR: GEMINI_API_KEY is not defined or using placeholder string in system environment secrets!")
+        print("DEBUGGER CRITICAL ERROR: GEMINI_API_KEY environment variable is missing!")
         return []
 
     ai_client = genai.Client(api_key=api_key)
     all_final_rows = []
     
-    CHUNK_SIZE = 5
+    # Large chunk sizing to protect the 20 requests per day restriction
+    CHUNK_SIZE = 35
     stock_chunks = [unified_stock_list[i:i + CHUNK_SIZE] for i in range(0, len(unified_stock_list), CHUNK_SIZE)]
-    print(f"DEBUGGER: Split pool into {len(stock_chunks)} distinct batches of size {CHUNK_SIZE} for Gemini handling.")
+    print(f"DEBUGGER: Compressed pool into {len(stock_chunks)} large batches (Size: {CHUNK_SIZE}) to save daily quota.")
 
     for idx, chunk in enumerate(stock_chunks, start=1):
-        print(f"\n--- DEBUGGER: STARTING BATCH {idx}/{len(stock_chunks)} ---")
-        print(f"DEBUGGER: Tickers in this batch: {chunk}")
+        print(f"\n--- DEBUGGER: STARTING MASSIVE BATCH {idx}/{len(stock_chunks)} ---")
+        print(f"DEBUGGER: Pushing {len(chunk)} tickers directly into this request block context.")
         
         try:
             compiled_stock_data_context = ""
+            active_chunk_tickers = []
+            
             for stock in chunk:
                 try:
                     origins = []
@@ -302,12 +302,9 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                     if stock in ssf_2w: origins.append("SSF_Two_Weeks_Ago")
                     source_str = ", ".join(origins) if origins else "Runtime_Scanner_Pool"
 
-                    print(f"  -> DEBUGGER: Fetching historicals for {stock} via yfinance...")
                     ticker = yf.Ticker(stock)
                     df = ticker.history(period="1y", interval="1wk")
-                    if df.empty: 
-                        print(f"  -> DEBUGGER WARNING: Historical data frame returned empty for {stock}. Skipping.")
-                        continue
+                    if df.empty: continue
                         
                     close_arr = df['Close'].values
                     df['SSF_50'] = super_smoother(close_arr, 50)
@@ -337,18 +334,21 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                     - Oscillators: 14-Wk RSI={rsi_current:.2f} | MACD Hist={macd_hist:.4f}
                     - Technical Ranges: 52-Wk Low Support=INR {support_52wk:.2f} | 52-Wk High Resistance=INR {resistance_52wk:.2f}
                     """
-                except Exception as inner_data_err:
-                    print(f"  -> DEBUGGER EXCEPTION: Failed compiling telemetry for single ticker {stock}. Error details: {inner_data_err}")
+                    active_chunk_tickers.append(stock)
+                except Exception:
                     continue
 
             if not compiled_stock_data_context.strip():
-                print(f"DEBUGGER WARNING: Batch {idx} context is completely blank after market fetch phase. Skipping API call.")
+                print(f"DEBUGGER WARNING: Batch {idx} context data was blank. Skipping.")
                 continue
 
             prompt = f"""
             You are an elite institutional quantitative swing trader and order-flow specialist.
             Analyze this multi-strategy breakout candidates portfolio payload generated via our SSF crossover scanners.
             Your main goal is to protect capital by separating true momentum stocks from fake breakout retail traps.
+
+            CRITICAL STRUCTURAL INSTRUCTION: 
+            You must evaluate and return a corresponding data object inside your 'analyses' response list for EVERY SINGLE TICKER requested below. Do not leave out, combine, or drop any tickers due to payload constraints.
 
             STRICT TRADING EVALUATION PROTOCOLS:
             1. SUSTAINED-MOMENTUM: Valid breakout setup. Price action expansion is backed by massive institutional accumulation (Relative Volume Ratio >= 1.50x), OBV shows distinct uptrend accumulation, CMF is positive (>0.05), and RSI has open runway space.
@@ -364,14 +364,27 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                 response_schema=PortfolioAuditPayload,
             )
             
-            print(f"DEBUGGER: Dispatching connection payloads for Batch {idx} to Gemini flash endpoints...")
+            print(f"DEBUGGER: Sending big batch data array to Gemini endpoints...")
             response = ai_client.models.generate_content(
                 model='gemini-2.5-flash', contents=prompt, config=config
             )
             
-            print(f"DEBUGGER: Raw connection text payload received back from Gemini endpoint for Batch {idx}. Parsing JSON matrix...")
             result_payload = PortfolioAuditPayload.model_validate_json(response.text)
             
+            # --- THE TICKER ORIENTATION ALIGNMENT CHECK ---
+            received_tickers = [item.ticker.strip().upper() for item in result_payload.analyses]
+            expected_tickers = [t.strip().upper() for t in active_chunk_tickers]
+            missing_tickers = [t for t in expected_tickers if t not in received_tickers]
+            
+            print(f"📊 BATCH DIAGNOSIS REPORT:")
+            print(f"  -> Total Tickers Requested: {len(expected_tickers)}")
+            print(f"  -> Total Tickers Returned Analyzed: {len(received_tickers)}")
+            if missing_tickers:
+                print(f"  ⚠️ ALERT! Gemini dropped {len(missing_tickers)} stocks due to disorientation context overload!")
+                print(f"  ⚠️ Dropped Ticker List: {missing_tickers}")
+            else:
+                print("  ✅ EXCELLENT: Gemini maintained flawless focus and processed 100% of the tickers in this batch.")
+
             parsed_count_this_batch = 0
             for item in result_payload.analyses:
                 all_final_rows.append([
@@ -380,36 +393,26 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                     item.structural_stop_loss, item.target_profit
                 ])
                 parsed_count_this_batch += 1
-            print(f"DEBUGGER SUCCESS: Collected {parsed_count_this_batch} analyzed rows into local system memory matrix for Batch {idx}.")
-
+                
         except Exception as batch_level_error:
-            print(f"DEBUGGER CRITICAL ERROR: Execution broke completely on Batch {idx}. Exception dump: {batch_level_error}")
+            print(f"DEBUGGER CRITICAL ERROR: Batch {idx} failed entirely. Exception dump: {batch_level_error}")
             pass
 
         if idx < len(stock_chunks):
-            print(f"DEBUGGER: Entering standard anti-throttling countdown (12 seconds) before unlocking next batch call...")
-            time.sleep(12)
+            print("DEBUGGER: Free Tier safeguard sleep window triggered (15 seconds)...")
+            time.sleep(15)
 
-    # --- ATOMIC WRITE ACTION ---
-    print("\n========================================================")
-    print("DEBUGGER: EXECUTING SPREADSHEET UPDATE WRAP-UP PHASE")
-    print(f"DEBUGGER: Total rows waiting in memory array to write: {len(all_final_rows)}")
-    print("========================================================\n")
-    
+    # --- ATOMIC WRITE PHASE ---
     try:
-        print("DEBUGGER: Wiping target worksheet contents completely clean...")
+        print(f"\nDEBUGGER: Pushing entire aggregated collection ({len(all_final_rows)} rows) to Google Sheets...")
         sheet.clear()
-        print("DEBUGGER: Complete wipe done. Sleeping 4 seconds to force cloud updates to finalize...")
         time.sleep(4)
-        
         headers = [["Stock", "Source Strategy", "AI Swing Verdict", "Comprehensive Momentum Drivers", "Institutional Risk Mitigation Analysis", "Technical Stop-Loss", "Structural Profit Target"]]
         final_sheet_matrix = headers + all_final_rows
-        
-        print(f"DEBUGGER: Sending continuous block write structure ({len(final_sheet_matrix)} elements matrix) to cell coordinate A1...")
         sheet.update(range_name='A1', values=final_sheet_matrix)
-        print("DEBUGGER SUCCESS: Cloud matrix sync complete. Exiting cleanly.")
+        print("DEBUGGER SUCCESS: Synchronization completed flawlessly.")
     except Exception as e:
-        print(f"DEBUGGER FATAL WRITE ERROR: Script crashed during final push phase to Google sheets. Exception: {e}")
+        print(f"DEBUGGER FATAL SPREADSHEET WRITE ERROR: {e}")
 
     return all_final_rows
 
