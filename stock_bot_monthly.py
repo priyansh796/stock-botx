@@ -254,7 +254,7 @@ class PortfolioAuditPayload(BaseModel):
     analyses: list[SwingMomentumAnalysis]
 
 # =====================================================================
-# BALANCED BATCHING SYSTEM
+# BALANCED BATCHING SYSTEM (INCREMENTAL WRITING UPGRADE)
 # =====================================================================
 def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
     if not unified_stock_list:
@@ -274,7 +274,7 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
         return []
 
     ai_client = genai.Client(api_key=api_key)
-    all_parsed_rows = []
+    total_processed_results = []
     
     CHUNK_SIZE = 10
     stock_chunks = [unified_stock_list[i:i + CHUNK_SIZE] for i in range(0, len(unified_stock_list), CHUNK_SIZE)]
@@ -323,7 +323,9 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                 - Oscillators: 14-Wk RSI={rsi_current:.2f} | MACD Hist={macd_hist:.4f}
                 - Technical Ranges: 52-Wk Low Support=INR {support_52wk:.2f} | 52-Wk High Resistance=INR {resistance_52wk:.2f}
                 """
-            except: continue
+            except Exception as data_err:
+                print(f"Error compiling context for {stock}: {data_err}")
+                continue
 
         if not compiled_stock_data_context.strip():
             continue
@@ -347,30 +349,38 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
             response_schema=PortfolioAuditPayload,
         )
         
+        # --- SAFE IMPLEMENTATION: Incremental background write-out per processed batch chunk ---
         try:
             print(f"Dispatching Batch {idx}/{len(stock_chunks)} (Size: {len(chunk)}) to Gemini...")
             response = ai_client.models.generate_content(
                 model='gemini-2.5-flash', contents=prompt, config=config
             )
             result_payload = PortfolioAuditPayload.model_validate_json(response.text)
+            
+            batch_rows = []
             for item in result_payload.analyses:
-                all_parsed_rows.append([
+                row_data = [
                     item.ticker, item.signal_source_list, item.verdict, 
                     item.momentum_drivers, item.risk_mitigation, 
                     item.structural_stop_loss, item.target_profit
-                ])
+                ]
+                batch_rows.append(row_data)
+                total_processed_results.append(row_data)
+            
+            # Immediately append current structural data chunk directly onto spreadsheet layout
+            if batch_rows:
+                sheet.append_rows(batch_rows, value_input_option='RAW')
+                print(f"Successfully appended Batch {idx} ({len(batch_rows)} rows) to the Google Sheet.")
+
         except Exception as e:
-            print(f"Error executing batch {idx}: {e}")
+            print(f"CRITICAL ERROR executing batch {idx}, skipping to next batch to protect workflow: {e}")
 
         if idx < len(stock_chunks):
             print("Enforcing strict 15-second cooldown to avoid 5 RPM limits...")
             time.sleep(15)
 
-    # --- CRITICAL FIX: Executed outside the loop to update ALL collected stocks together ---
-    if all_parsed_rows:
-        print(f"Writing ALL {len(all_parsed_rows)} completed data rows directly to your Google Sheet...")
-        sheet.update(range_name='A2', values=all_parsed_rows)
-    return all_parsed_rows
+    print(f"Workflow Complete. Total successfully saved stocks: {len(total_processed_results)}")
+    return total_processed_results
 
 # =====================================================================
 # CORE PIPELINE RUNTIME SCANNERS LOOP
