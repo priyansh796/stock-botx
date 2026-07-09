@@ -262,7 +262,7 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
         return []
 
     try: sheet = spreadsheet.worksheet("AI_SSF_2Weeks_Deep_Dive")
-    except: sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=300, cols=7)
+    except: sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=1000, cols=7)
     
     sheet.clear()
     headers = [["Stock", "Source Strategy", "AI Swing Verdict", "Comprehensive Momentum Drivers", "Institutional Risk Mitigation Analysis", "Technical Stop-Loss", "Structural Profit Target"]]
@@ -366,8 +366,9 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
             print("Enforcing strict 15-second cooldown to avoid 5 RPM limits...")
             time.sleep(15)
 
+    # --- CRITICAL FIX: Executed outside the loop to update ALL collected stocks together ---
     if all_parsed_rows:
-        print(f"Writing {len(all_parsed_rows)} completed data rows directly to your Google Sheet...")
+        print(f"Writing ALL {len(all_parsed_rows)} completed data rows directly to your Google Sheet...")
         sheet.update(range_name='A2', values=all_parsed_rows)
     return all_parsed_rows
 
@@ -458,7 +459,7 @@ for stock in stocks:
                 ssf_special_monthly.append(stock)
 
             if rolling_setup_monthly(m_df, 20) and m_df['SSF_50'].iloc[-1] < m_df['SSF_200'].iloc[-1]:
-                if check_ssf_two_months_ago_confirmed(m_df):
+                if check_ssf_two_weeks_ago_confirmed(m_df):
                     ssf_two_months_ago.append(stock)
 
             if len(m_df) >= 2:
@@ -477,7 +478,7 @@ coiled_spring_top = [x[0] for x in sorted(coiled_spring_scored, key=lambda x: x[
 predictive_up_list = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
 predictive_down_list = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
 
-# Update regular strategy tabs with the freshly generated scanner outputs
+# Update standard technical tabs
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
@@ -493,7 +494,6 @@ simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
 # --- RUNTIME UNIFIED POOL GENERATION ---
-# Passes the pristine, ongoing target lists directly to the AI right now
 unified_pool = list(set(top_weekly + rest_weekly + ssf_two_weeks_ago))
 
 batch_ai_results = run_batch_portfolio_ai_audit(
@@ -503,7 +503,7 @@ batch_ai_results = run_batch_portfolio_ai_audit(
     ssf_2w=ssf_two_weeks_ago
 )
 
-# Dispatch Strategy Comms over Telegram (Clean and concise, excluding AI descriptions)
+# Dispatch Strategy Comms over Telegram
 msg1 = f"🚀 STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
 msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up_list[:15]}\n\nPredictive DOWN:\n{predictive_down_list[:15]}"
 msg3 = f"➰ COILED SPRING (POTENTIAL):\n{coiled_spring_top}"
