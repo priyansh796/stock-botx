@@ -254,7 +254,7 @@ class PortfolioAuditPayload(BaseModel):
     analyses: list[SwingMomentumAnalysis]
 
 # =====================================================================
-# BALANCED BATCHING SYSTEM (SOLVES OUTPUT CEILING & RATE LIMITS)
+# BALANCED BATCHING SYSTEM
 # =====================================================================
 def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
     if not unified_stock_list:
@@ -276,11 +276,10 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
     ai_client = genai.Client(api_key=api_key)
     all_parsed_rows = []
     
-    # 10 Stocks per batch guarantees staying under the 8,192 maximum output token limits
     CHUNK_SIZE = 10
     stock_chunks = [unified_stock_list[i:i + CHUNK_SIZE] for i in range(0, len(unified_stock_list), CHUNK_SIZE)]
 
-    print(f"Processing {len(unified_stock_list)} stocks across {len(stock_chunks)} safe batches...")
+    print(f"Processing {len(unified_stock_list)} runtime stocks across {len(stock_chunks)} safe batches...")
 
     for idx, chunk in enumerate(stock_chunks, start=1):
         compiled_stock_data_context = ""
@@ -290,7 +289,7 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                 if stock in top_w: origins.append("Top_Weekly")
                 if stock in rest_w: origins.append("Rest_Weekly")
                 if stock in ssf_2w: origins.append("SSF_Two_Weeks_Ago")
-                source_str = ", ".join(origins) if origins else "Scanner_Pool"
+                source_str = ", ".join(origins) if origins else "Runtime_Scanner_Pool"
 
                 ticker = yf.Ticker(stock)
                 df = ticker.history(period="1y", interval="1wk")
@@ -363,7 +362,6 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
         except Exception as e:
             print(f"Error executing batch {idx}: {e}")
 
-        # Precise Rate Limit Countermeasure: 15-second pause keeps execution under 4 Requests Per Minute safely
         if idx < len(stock_chunks):
             print("Enforcing strict 15-second cooldown to avoid 5 RPM limits...")
             time.sleep(15)
@@ -479,6 +477,7 @@ coiled_spring_top = [x[0] for x in sorted(coiled_spring_scored, key=lambda x: x[
 predictive_up_list = [x[0] for x in sorted(predictive_up, key=lambda x: x[1], reverse=True)]
 predictive_down_list = [x[0] for x in sorted(predictive_down, key=lambda x: x[1], reverse=True)]
 
+# Update regular strategy tabs with the freshly generated scanner outputs
 update_sheet("Top_Weekly", top_weekly)
 update_sheet("Rest_Weekly", rest_weekly)
 update_sheet("Top_Monthly", top_monthly)
@@ -493,10 +492,10 @@ update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago)
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
-# --- UNIFIED STRATEGY LIST GENERATION ---
+# --- RUNTIME UNIFIED POOL GENERATION ---
+# Passes the pristine, ongoing target lists directly to the AI right now
 unified_pool = list(set(top_weekly + rest_weekly + ssf_two_weeks_ago))
 
-# --- DISPATCH PROTECTED BATCH LOGIC ---
 batch_ai_results = run_batch_portfolio_ai_audit(
     unified_stock_list=unified_pool,
     top_w=top_weekly,
@@ -504,7 +503,7 @@ batch_ai_results = run_batch_portfolio_ai_audit(
     ssf_2w=ssf_two_weeks_ago
 )
 
-# Dispatch System Comms over Telegram channels
+# Dispatch Strategy Comms over Telegram (Clean and concise, excluding AI descriptions)
 msg1 = f"🚀 STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
 msg2 = f"🔮 PREDICTIVE QUANT\n\nPredictive UP:\n{predictive_up_list[:15]}\n\nPredictive DOWN:\n{predictive_down_list[:15]}"
 msg3 = f"➰ COILED SPRING (POTENTIAL):\n{coiled_spring_top}"
@@ -518,19 +517,5 @@ send_telegram_message(msg3)
 send_telegram_message(msg4)
 send_telegram_message(msg5)
 send_telegram_message(msg6)
-
-if not batch_ai_results:
-    send_telegram_message("🧠 SWING MOMENTUM AUDIT\n\nNo active breakout candidates processed.")
-else:
-    current_chunk = "🧠 SWING MOMENTUM AUDIT\n\n"
-    for item in batch_ai_results:
-        stock_text = f"• Ticker: *{item[0]}* ({item[1]})\n  Verdict: `{item[2]}`\n  Drivers: {item[3]}\n  Risk Mitigation: {item[4]}\n  SL: {item[5]} | TP: {item[6]}\n\n"
-        if len(current_chunk) + len(stock_text) > 3800:
-            send_telegram_message(current_chunk)
-            current_chunk = "🧠 SWING MOMENTUM AUDIT (CONTINUED):\n\n" + stock_text
-        else:
-            current_chunk += stock_text
-    if current_chunk:
-        send_telegram_message(current_chunk)
 
 print("Process Complete Safely.")
