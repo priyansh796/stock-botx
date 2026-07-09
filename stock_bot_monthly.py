@@ -240,7 +240,7 @@ def simple_update(sheet_name, data_list):
     rows = [[s] for s in data_list]
     sheet.update(range_name='A1', values=(headers + rows))
 
-# --- DESIGNED SINGLE-RESPONSE COMPACT ANALYSIS BLUEPRINT ---
+# --- DESIGNED STRUCTURAL MAPPING BLUEPRINT ---
 class SwingMomentumAnalysis(BaseModel):
     ticker: str = Field(description="The ticker symbol of the stock")
     signal_source_list: str = Field(description="Strategy sheet origin list tags")
@@ -254,7 +254,7 @@ class PortfolioAuditPayload(BaseModel):
     analyses: list[SwingMomentumAnalysis]
 
 # =====================================================================
-# GUARANTEED ONE-SHOT PORTFOLIO DEEP AUDIT FILTER ENGINE
+# BALANCED BATCHING SYSTEM (SOLVES OUTPUT CEILING & RATE LIMITS)
 # =====================================================================
 def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
     if not unified_stock_list:
@@ -274,89 +274,102 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
         return []
 
     ai_client = genai.Client(api_key=api_key)
-    compiled_stock_data_context = ""
-
-    print(f"Aggregating full descriptive historical metrics for all {len(unified_stock_list)} tickers into one payload...")
-
-    for stock in unified_stock_list:
-        try:
-            origins = []
-            if stock in top_w: origins.append("Top_Weekly")
-            if stock in rest_w: origins.append("Rest_Weekly")
-            if stock in ssf_2w: origins.append("SSF_Two_Weeks_Ago")
-            source_str = ", ".join(origins) if origins else "Scanner_Pool"
-
-            ticker = yf.Ticker(stock)
-            df = ticker.history(period="1y", interval="1wk")
-            if df.empty: continue
-                
-            close_arr = df['Close'].values
-            df['SSF_50'] = super_smoother(close_arr, 50)
-            
-            current_volume = df['Volume'].iloc[-1]
-            avg_volume_20 = df['Volume'].rolling(window=20).mean().iloc[-1]
-            volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
-            
-            obv_indicator = OnBalanceVolumeIndicator(close=df['Close'], volume=df['Volume'])
-            obv_series = obv_indicator.on_balance_volume()
-            obv_trend = "ACCUMULATION_UPTREND" if obv_series.iloc[-1] > obv_series.rolling(10).mean().iloc[-1] else "DISTRIBUTION_DOWNTREND"
-            
-            rsi_vals = RSIIndicator(close=df['Close'], window=14).rsi()
-            rsi_current = rsi_vals.iloc[-1] if not np.isnan(rsi_vals.iloc[-1]) else 50.0
-            macd_obj = MACD(close=df['Close'])
-            macd_hist = macd_obj.macd_diff().iloc[-1]
-            
-            support_52wk = df['Low'].rolling(window=52, min_periods=1).min().iloc[-1]
-            resistance_52wk = df['High'].rolling(window=52, min_periods=1).max().iloc[-1]
-            metrics = get_audit_data(stock, df)
-            
-            compiled_stock_data_context += f"""
-            === STOCK: {stock} (Origin: {source_str}) ===
-            - Close Price: INR {df['Close'].iloc[-1]:.2f}
-            - SSF Metrics: Squeeze Bandwidth={metrics[0]} | AO %={metrics[1]} | CMF={metrics[2]}
-            - VOLUME/ORDERFLOW: Relative Volume Ratio={volume_ratio:.2f}x | OBV Trend Structure={obv_trend} | Net Current Volume={current_volume} (20-Wk Avg: {avg_volume_20:.0f})
-            - Oscillators: 14-Wk RSI={rsi_current:.2f} | MACD Hist={macd_hist:.4f}
-            - Technical Ranges: 52-Wk Low Support=INR {support_52wk:.2f} | 52-Wk High Resistance=INR {resistance_52wk:.2f}
-            """
-        except: continue
-
-    prompt = f"""
-    You are an elite institutional quantitative swing trader and order-flow specialist.
-    Analyze this entire multi-strategy breakout candidates portfolio payload generated via our SSF crossover scanners.
-    Your main goal is to protect capital by separating true momentum stocks from fake breakout retail traps.
-
-    STRICT TRADING EVALUATION PROTOCOLS:
-    1. SUSTAINED-MOMENTUM: Valid breakout setup. Price action expansion is backed by massive institutional accumulation (Relative Volume Ratio >= 1.50x), OBV shows distinct uptrend accumulation, CMF is positive (>0.05), and RSI has open runway space.
-    2. FAKE-BREAKOUT-TRAP: Extreme risk of immediate failure. If price crossed above the SSF line but Relative Volume is thin (<1.0x), OBV is declining, or money flow is negative, identify this as a trap likely to break right back below the SSF 50 line.
-
-    RAW PORTFOLIO PAYLOAD TO PROCESS IN ONE TRANSACTION:
-    {compiled_stock_data_context}
-    """
-
-    config = types.GenerateContentConfig(
-        temperature=0.1,
-        response_mime_type="application/json",
-        response_schema=PortfolioAuditPayload,
-    )
-    
     all_parsed_rows = []
-    print("Dispatching exactly ONE single transaction containing full portfolio pool data to Gemini...")
-    try:
-        response = ai_client.models.generate_content(
-            model='gemini-2.5-flash', contents=prompt, config=config
+    
+    # 10 Stocks per batch guarantees staying under the 8,192 maximum output token limits
+    CHUNK_SIZE = 10
+    stock_chunks = [unified_stock_list[i:i + CHUNK_SIZE] for i in range(0, len(unified_stock_list), CHUNK_SIZE)]
+
+    print(f"Processing {len(unified_stock_list)} stocks across {len(stock_chunks)} safe batches...")
+
+    for idx, chunk in enumerate(stock_chunks, start=1):
+        compiled_stock_data_context = ""
+        for stock in chunk:
+            try:
+                origins = []
+                if stock in top_w: origins.append("Top_Weekly")
+                if stock in rest_w: origins.append("Rest_Weekly")
+                if stock in ssf_2w: origins.append("SSF_Two_Weeks_Ago")
+                source_str = ", ".join(origins) if origins else "Scanner_Pool"
+
+                ticker = yf.Ticker(stock)
+                df = ticker.history(period="1y", interval="1wk")
+                if df.empty: continue
+                    
+                close_arr = df['Close'].values
+                df['SSF_50'] = super_smoother(close_arr, 50)
+                
+                current_volume = df['Volume'].iloc[-1]
+                avg_volume_20 = df['Volume'].rolling(window=20).mean().iloc[-1]
+                volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
+                
+                obv_indicator = OnBalanceVolumeIndicator(close=df['Close'], volume=df['Volume'])
+                obv_series = obv_indicator.on_balance_volume()
+                obv_trend = "ACCUMULATION_UPTREND" if obv_series.iloc[-1] > obv_series.rolling(10).mean().iloc[-1] else "DISTRIBUTION_DOWNTREND"
+                
+                rsi_vals = RSIIndicator(close=df['Close'], window=14).rsi()
+                rsi_current = rsi_vals.iloc[-1] if not np.isnan(rsi_vals.iloc[-1]) else 50.0
+                macd_obj = MACD(close=df['Close'])
+                macd_hist = macd_obj.macd_diff().iloc[-1]
+                
+                support_52wk = df['Low'].rolling(window=52, min_periods=1).min().iloc[-1]
+                resistance_52wk = df['High'].rolling(window=52, min_periods=1).max().iloc[-1]
+                metrics = get_audit_data(stock, df)
+                
+                compiled_stock_data_context += f"""
+                === STOCK: {stock} (Origin: {source_str}) ===
+                - Close Price: INR {df['Close'].iloc[-1]:.2f}
+                - SSF Metrics: Squeeze Bandwidth={metrics[0]} | AO %={metrics[1]} | CMF={metrics[2]}
+                - VOLUME/ORDERFLOW: Relative Volume Ratio={volume_ratio:.2f}x | OBV Trend Structure={obv_trend} | Net Current Volume={current_volume} (20-Wk Avg: {avg_volume_20:.0f})
+                - Oscillators: 14-Wk RSI={rsi_current:.2f} | MACD Hist={macd_hist:.4f}
+                - Technical Ranges: 52-Wk Low Support=INR {support_52wk:.2f} | 52-Wk High Resistance=INR {resistance_52wk:.2f}
+                """
+            except: continue
+
+        if not compiled_stock_data_context.strip():
+            continue
+
+        prompt = f"""
+        You are an elite institutional quantitative swing trader and order-flow specialist.
+        Analyze this multi-strategy breakout candidates portfolio payload generated via our SSF crossover scanners.
+        Your main goal is to protect capital by separating true momentum stocks from fake breakout retail traps.
+
+        STRICT TRADING EVALUATION PROTOCOLS:
+        1. SUSTAINED-MOMENTUM: Valid breakout setup. Price action expansion is backed by massive institutional accumulation (Relative Volume Ratio >= 1.50x), OBV shows distinct uptrend accumulation, CMF is positive (>0.05), and RSI has open runway space.
+        2. FAKE-BREAKOUT-TRAP: Extreme risk of immediate failure. If price crossed above the SSF line but Relative Volume is thin (<1.0x), OBV is declining, or money flow is negative, identify this as a trap likely to break right back below the SSF 50 line.
+
+        RAW PORTFOLIO PAYLOAD TO PROCESS:
+        {compiled_stock_data_context}
+        """
+
+        config = types.GenerateContentConfig(
+            temperature=0.1,
+            response_mime_type="application/json",
+            response_schema=PortfolioAuditPayload,
         )
-        result_payload = PortfolioAuditPayload.model_validate_json(response.text)
-        for item in result_payload.analyses:
-            all_parsed_rows.append([
-                item.ticker, item.signal_source_list, item.verdict, 
-                item.momentum_drivers, item.risk_mitigation, 
-                item.structural_stop_loss, item.target_profit
-            ])
-        print(f"Successfully processed all {len(all_parsed_rows)} candidates perfectly via exactly ONE execution call.")
-    except Exception as e:
-        print(f"Fatal error executing single transaction response layout: {e}")
+        
+        try:
+            print(f"Dispatching Batch {idx}/{len(stock_chunks)} (Size: {len(chunk)}) to Gemini...")
+            response = ai_client.models.generate_content(
+                model='gemini-2.5-flash', contents=prompt, config=config
+            )
+            result_payload = PortfolioAuditPayload.model_validate_json(response.text)
+            for item in result_payload.analyses:
+                all_parsed_rows.append([
+                    item.ticker, item.signal_source_list, item.verdict, 
+                    item.momentum_drivers, item.risk_mitigation, 
+                    item.structural_stop_loss, item.target_profit
+                ])
+        except Exception as e:
+            print(f"Error executing batch {idx}: {e}")
+
+        # Precise Rate Limit Countermeasure: 15-second pause keeps execution under 4 Requests Per Minute safely
+        if idx < len(stock_chunks):
+            print("Enforcing strict 15-second cooldown to avoid 5 RPM limits...")
+            time.sleep(15)
 
     if all_parsed_rows:
+        print(f"Writing {len(all_parsed_rows)} completed data rows directly to your Google Sheet...")
         sheet.update(range_name='A2', values=all_parsed_rows)
     return all_parsed_rows
 
@@ -483,7 +496,7 @@ simple_update("Sell_Signals", sell_signals)
 # --- UNIFIED STRATEGY LIST GENERATION ---
 unified_pool = list(set(top_weekly + rest_weekly + ssf_two_weeks_ago))
 
-# --- DISPATCH COMPACT SINGLE-CALL TRANSACTION ENGINE ---
+# --- DISPATCH PROTECTED BATCH LOGIC ---
 batch_ai_results = run_batch_portfolio_ai_audit(
     unified_stock_list=unified_pool,
     top_w=top_weekly,
