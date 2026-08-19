@@ -12,7 +12,8 @@ from google.oauth2.service_account import Credentials
 # ==========================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Stock_Scanner_Dashboard")
+# Updated default sheet name to match your Google Sheet
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Stock Bot Dashboard")
 
 # Define Google Sheets scope & auth
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
