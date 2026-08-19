@@ -32,7 +32,7 @@ TELEGRAM_TOKEN = "8630503074:AAHgONEVwJB_QVZ1GeKBaVGl9Z3Ct0E_yLw"
 CHAT_ID = "8258280498"
 
 # =====================================================================
-# UNCHANGED CORE SSF & STRATEGY LOGIC
+# CORE SSF & STRATEGY LOGIC
 # =====================================================================
 def super_smoother(price, period):
     a1 = np.exp(-1.414 * np.pi / period)
@@ -52,17 +52,38 @@ def rolling_cross(close, ssf, lookback):
             break
     return True if (cross_found and close[-1] > ssf[-1]) else False
 
-def get_crossover_details(close, ssf, lookback):
+def get_crossover_details(close, ssf, max_lookback=50):
     """
-    Finds the price at which the stock crossed above SSF_50 
-    and calculates the % change and bars (weeks/months) elapsed since then.
+    Calculates percentage difference between CURRENT PRICE and the 
+    SSF_50 VALUE at the time the crossover occurred.
     """
+    n = len(close)
+    lookback = min(max_lookback, n - 1)
+    
+    # 1. Search for explicit crossover event: Close[t-1] < SSF[t-1] AND Close[t] > SSF[t]
     for i in range(1, lookback):
         if close[-i - 1] < ssf[-i - 1] and close[-i] > ssf[-i]:
-            cross_price = close[-i]
-            bars_since = i - 1  # 0 means crossed on current bar
-            delta_pct = ((close[-1] - cross_price) / cross_price) * 100
+            ssf_at_cross = ssf[-i]  # Exact SSF_50 level on breakout week
+            bars_since = i - 1      # 0 = crossed on latest completed bar
+            
+            # Gain calculated relative to SSF_50 level
+            delta_pct = ((close[-1] - ssf_at_cross) / ssf_at_cross) * 100
             return delta_pct, bars_since
+
+    # 2. Fallback: Walk backward to find when price was last below SSF_50
+    if close[-1] > ssf[-1]:
+        for i in range(1, lookback):
+            if close[-i] < ssf[-i]:
+                ssf_at_cross = ssf[-i + 1]
+                bars_since = i - 1
+                delta_pct = ((close[-1] - ssf_at_cross) / ssf_at_cross) * 100
+                return delta_pct, bars_since
+        
+        # If continuously above SSF_50 for entire lookback
+        ssf_at_cross = ssf[-lookback]
+        delta_pct = ((close[-1] - ssf_at_cross) / ssf_at_cross) * 100
+        return delta_pct, lookback
+
     return 0.0, 0
 
 def rolling_setup_monthly(df, lookback):
@@ -522,7 +543,8 @@ for stock in stocks:
                     ssf_two_months_ago.append(stock)
 
             if len(m_df) >= 2:
-                prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2]) if 'w_df' in locals() else False
+                # Corrected scoping bug: m_df used for both SSF_20 and SSF_50
+                prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > m_df['SSF_50'].iloc[-2])
                 if prev_h_m and m_df['Close'].iloc[-1] < m_df['SSF_20'].iloc[-1]:
                     sell_signals.append(stock)
     except Exception:
@@ -565,7 +587,7 @@ batch_ai_results = run_batch_portfolio_ai_audit(
 )
 
 # =====================================================================
-# RESTORED ORIGINAL INDIVIDUAL TELEGRAM NOTIFICATIONS
+# INDIVIDUAL TELEGRAM NOTIFICATIONS
 # =====================================================================
 send_telegram_message(f"🚀 Top Weekly Buy:\n{top_weekly}")
 time.sleep(1)
