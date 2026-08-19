@@ -6,7 +6,6 @@ import yfinance as yf
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
-from ta.momentum import ChaikinMoneyFlowIndicator, AwesomeOscillatorIndicator
 
 # ==========================================
 # 1. CONFIGURATION & ENVIRONMENT SETUP
@@ -17,7 +16,6 @@ GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Stock_Scanner_Dashboard")
 
 # Define Google Sheets scope & auth
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-# Ensure credentials.json is in your root directory or loaded via environment
 creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
 gc = gspread.authorize(creds)
 
@@ -101,7 +99,7 @@ def setup_and_clear_strategy_sheets():
         ws.clear()
         worksheets[title] = ws
         
-    # Ensure Portfolio Tracker exists
+    # Ensure Portfolio Tracker exists without wiping it
     worksheets["Portfolio_Tracker"] = get_or_create_worksheet("Portfolio_Tracker")
     return worksheets
 
@@ -165,8 +163,7 @@ def update_portfolio_tracker(ws_portfolio):
         print("Portfolio Tracker is empty or missing headers.")
         return
 
-    updates = []
-    # Assuming Headers: Symbol | Buy_Price | Quantity | Current_Price | SSF_20 | Status
+    # Expecting Headers: Symbol | Buy_Price | Quantity | Current_Price | SSF_20 | Status
     for idx, row in enumerate(records, start=2):  # Row 1 is Header
         symbol = str(row.get("Symbol", "")).strip()
         if not symbol:
@@ -193,13 +190,12 @@ def update_portfolio_tracker(ws_portfolio):
 # 7. MAIN EXECUTION PIPELINE
 # ==========================================
 def main():
-    print("Starting Weekly Scanner...")
+    print("Starting Scanner Pipeline...")
     
     # 1. Setup worksheets & clear old strategy tabs
     worksheets = setup_and_clear_strategy_sheets()
 
     # 2. Define universe of stocks to scan
-    # Example list - replace with your universe list or CSV import
     ticker_universe = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "TATAMOTORS.NS"]
 
     top_weekly_results = []
@@ -225,14 +221,14 @@ def main():
         df_rest = pd.DataFrame(rest_weekly_results)[headers]
         worksheets["Rest_Weekly"].update([df_rest.columns.values.tolist()] + df_rest.values.tolist())
 
-    # 5. Update user portfolio status
+    # 5. Update user portfolio status (if Portfolio_Tracker has data)
     update_portfolio_tracker(worksheets["Portfolio_Tracker"])
 
     # 6. Send Telegram notification summary
     top_symbols = [r["Symbol"] for r in top_weekly_results]
     rest_symbols = [r["Symbol"] for r in rest_weekly_results]
 
-    msg = f"🚀 *Weekend Scan Complete* ({datetime.now().strftime('%Y-%m-%d')})\n\n"
+    msg = f"🚀 *Scan Complete* ({datetime.now().strftime('%Y-%m-%d')})\n\n"
     msg += f"🔥 *Top Weekly Signals ({len(top_symbols)}):*\n"
     msg += f"`{', '.join(top_symbols) if top_symbols else 'None'}`\n\n"
     msg += f"📈 *Rest Weekly Signals ({len(rest_symbols)}):*\n"
