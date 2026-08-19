@@ -52,6 +52,19 @@ def rolling_cross(close, ssf, lookback):
             break
     return True if (cross_found and close[-1] > ssf[-1]) else False
 
+def get_crossover_details(close, ssf, lookback):
+    """
+    Finds the price at which the stock crossed above SSF_50 
+    and calculates the % change and bars (weeks/months) elapsed since then.
+    """
+    for i in range(1, lookback):
+        if close[-i - 1] < ssf[-i - 1] and close[-i] > ssf[-i]:
+            cross_price = close[-i]
+            bars_since = i - 1  # 0 means crossed on current bar
+            delta_pct = ((close[-1] - cross_price) / cross_price) * 100
+            return delta_pct, bars_since
+    return 0.0, 0
+
 def rolling_setup_monthly(df, lookback):
     for i in range(1, lookback):
         if (df['Close'].iloc[-i] < df['SSF_50'].iloc[-i] and 
@@ -169,9 +182,9 @@ def clean_val(val):
     except Exception: return 0.0
 
 # --- SHEET WIPING & RE-WRITING ENGINE (FOR SCANNER TABS) ---
-def update_sheet(sheet_name, data_list):
+def update_sheet(sheet_name, data_list, delta_map=None, time_frame_label="Weeks"):
     try: sheet = spreadsheet.worksheet(sheet_name)
-    except Exception: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=12)
+    except Exception: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=14)
     
     prev_rows = sheet.get_all_values()
     history = {}
@@ -180,10 +193,9 @@ def update_sheet(sheet_name, data_list):
             if len(row) >= 4 and row[0]: 
                 history[row[0]] = {"rank": idx, "bw": clean_val(row[1]), "ao": clean_val(row[2]), "cmf": clean_val(row[3])}
 
-    # Wipes old data completely before writing fresh scanner results
     sheet.clear()
     time.sleep(2)
-    headers = [["Stock", "Volatility (Squeeze)", "Momentum (AO %)", "Institutional (CMF)", "Rank Delta", "BW Delta", "AO Delta", "CMF Delta", "BOT VERDICT"]]
+    headers = [["Stock", "SSF 50 Cross Delta %", f"{time_frame_label} Since Cross", "Volatility (Squeeze)", "Momentum (AO %)", "Institutional (CMF)", "Rank Delta", "BW Delta", "AO Delta", "CMF Delta", "BOT VERDICT"]]
     rows = []
     
     if not data_list:
@@ -196,6 +208,15 @@ def update_sheet(sheet_name, data_list):
         if not df.empty:
             audit = get_audit_data(stock, df)
             
+            # Fetch SSF 50 Crossover details
+            if delta_map and stock in delta_map:
+                c_delta_pct, bars_elapsed = delta_map[stock]
+                c_delta_str = f"{c_delta_pct:.2f}%"
+                bars_str = f"{bars_elapsed}"
+            else:
+                c_delta_str = "N/A"
+                bars_str = "N/A"
+
             if stock in history:
                 prev = history[stock]
                 r_delta = prev['rank'] - current_rank
@@ -207,7 +228,7 @@ def update_sheet(sheet_name, data_list):
                 r_str, bw_delta, ao_delta, cmf_delta = "🆕 NEW", 0, 0, 0
 
             rows.append([
-                stock, audit[0], audit[1], audit[2], 
+                stock, c_delta_str, bars_str, audit[0], audit[1], audit[2], 
                 r_str, f"{bw_delta:.4f}", f"{ao_delta:.4f}%", f"{cmf_delta:.4f}", 
                 audit[3]
             ])
@@ -448,7 +469,11 @@ for stock in stocks:
                 rsi_w.iloc[-1] > rsi_ma_w.iloc[-1] and w_df['SSF_50'].iloc[-1] < w_df['SSF_200'].iloc[-1]):
                 
                 score = rsi_w.iloc[-1] + ((w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]) * 100
-                weekly_buy_scored.append((stock, score))
+                
+                # Fetch SSF 50 Crossover Delta % and Weeks Elapsed
+                cross_delta_pct_w, weeks_since = get_crossover_details(w_close, w_df['SSF_50'].values, 6)
+
+                weekly_buy_scored.append((stock, score, cross_delta_pct_w, weeks_since))
                 
                 dist_from_ssf = (w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]
                 potential_score = rsi_w.iloc[-1] / max(dist_from_ssf, 0.01)
@@ -483,7 +508,11 @@ for stock in stocks:
                 rsi_m.iloc[-1] > rsi_ma_m.iloc[-1] and m_df['SSF_50'].iloc[-1] < m_df['SSF_200'].iloc[-1]):
                 
                 score_m = rsi_m.iloc[-1] + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
-                monthly_buy_scored.append((stock, score_m))
+                
+                # Fetch SSF 50 Crossover Delta % and Months Elapsed
+                cross_delta_pct_m, months_since = get_crossover_details(m_close, m_df['SSF_50'].values, 6)
+
+                monthly_buy_scored.append((stock, score_m, cross_delta_pct_m, months_since))
             
             if check_ssf_special_monthly(m_df):
                 ssf_special_monthly.append(stock)
@@ -493,7 +522,7 @@ for stock in stocks:
                     ssf_two_months_ago.append(stock)
 
             if len(m_df) >= 2:
-                prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > m_df['SSF_50'].iloc[-2])
+                prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2]) if 'w_df' in locals() else False
                 if prev_h_m and m_df['Close'].iloc[-1] < m_df['SSF_20'].iloc[-1]:
                     sell_signals.append(stock)
     except Exception:
@@ -501,18 +530,20 @@ for stock in stocks:
 
 # Sort and bucket strategy rankings
 weekly_buy_scored = sorted(weekly_buy_scored, key=lambda x: x[1], reverse=True)
+cross_delta_map_weekly = {item[0]: (item[2], item[3]) for item in weekly_buy_scored}
 top_weekly, rest_weekly = [x[0] for x in weekly_buy_scored[:5]], [x[0] for x in weekly_buy_scored[5:]]
 
 monthly_buy_scored = sorted(monthly_buy_scored, key=lambda x: x[1], reverse=True)
+cross_delta_map_monthly = {item[0]: (item[2], item[3]) for item in monthly_buy_scored}
 top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x in monthly_buy_scored[5:]]
 
 coiled_spring_top = [x[0] for x in sorted(coiled_spring_scored, key=lambda x: x[1], reverse=True)[:10]]
 
 # Wipe & Re-write Dynamic Scanner Output Tabs
-update_sheet("Top_Weekly", top_weekly)
-update_sheet("Rest_Weekly", rest_weekly)
-update_sheet("Top_Monthly", top_monthly)
-update_sheet("Rest_Monthly", rest_monthly)
+update_sheet("Top_Weekly", top_weekly, delta_map=cross_delta_map_weekly, time_frame_label="Weeks")
+update_sheet("Rest_Weekly", rest_weekly, delta_map=cross_delta_map_weekly, time_frame_label="Weeks")
+update_sheet("Top_Monthly", top_monthly, delta_map=cross_delta_map_monthly, time_frame_label="Months")
+update_sheet("Rest_Monthly", rest_monthly, delta_map=cross_delta_map_monthly, time_frame_label="Months")
 update_sheet("Coiled_Spring_Top", coiled_spring_top)
 update_sheet("SSF_Special_Weekly", ssf_special_weekly)
 update_sheet("SSF_Special_Monthly", ssf_special_monthly)
@@ -521,7 +552,7 @@ update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago)
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
-# Safe Update of Portfolio Tracker (Preserves Existing Row Tickers)
+# Safe Update of Portfolio Tracker
 update_portfolio_tracker()
 
 # Run AI Deep Dive Batch Audit
@@ -533,8 +564,29 @@ batch_ai_results = run_batch_portfolio_ai_audit(
     ssf_2w=ssf_two_weeks_ago
 )
 
-# Dispatch Summary via Telegram
-msg1 = f"🚀 STRATEGY OUTPUTS\n\nTop Weekly Buy:\n{top_weekly}\n\nRest Weekly Buy:\n{rest_weekly}\n\nTop Monthly Buy:\n{top_monthly}\n\nRest Monthly Buy:\n{rest_monthly}\n\nWeekly Sell:\n{weekly_sell_signals}\n\nMonthly Sell:\n{sell_signals}"
-send_telegram_message(msg1)
+# =====================================================================
+# RESTORED ORIGINAL INDIVIDUAL TELEGRAM NOTIFICATIONS
+# =====================================================================
+send_telegram_message(f"🚀 Top Weekly Buy:\n{top_weekly}")
+time.sleep(1)
+send_telegram_message(f"📈 Rest Weekly Buy:\n{rest_weekly}")
+time.sleep(1)
+send_telegram_message(f"🌟 Top Monthly Buy:\n{top_monthly}")
+time.sleep(1)
+send_telegram_message(f"📊 Rest Monthly Buy:\n{rest_monthly}")
+time.sleep(1)
+send_telegram_message(f"⚡ Coiled Spring Top 10:\n{coiled_spring_top}")
+time.sleep(1)
+send_telegram_message(f"🔥 SSF Special Weekly:\n{ssf_special_weekly}")
+time.sleep(1)
+send_telegram_message(f"💥 SSF Special Monthly:\n{ssf_special_monthly}")
+time.sleep(1)
+send_telegram_message(f"⏳ SSF Two Weeks Ago Confirmed:\n{ssf_two_weeks_ago}")
+time.sleep(1)
+send_telegram_message(f"⌛ SSF Two Months Ago Confirmed:\n{ssf_two_months_ago}")
+time.sleep(1)
+send_telegram_message(f"⚠️ Weekly Sell Signals:\n{weekly_sell_signals}")
+time.sleep(1)
+send_telegram_message(f"🚨 Monthly Sell Signals:\n{sell_signals}")
 
 print("Process Completed Successfully.")
