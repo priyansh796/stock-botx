@@ -53,24 +53,16 @@ def rolling_cross(close, ssf, lookback):
     return True if (cross_found and close[-1] > ssf[-1]) else False
 
 def get_crossover_details(close, ssf, max_lookback=50):
-    """
-    Calculates percentage difference between CURRENT PRICE and the 
-    SSF_50 VALUE at the time the crossover occurred.
-    """
     n = len(close)
     lookback = min(max_lookback, n - 1)
     
-    # 1. Search for explicit crossover event: Close[t-1] < SSF[t-1] AND Close[t] > SSF[t]
     for i in range(1, lookback):
         if close[-i - 1] < ssf[-i - 1] and close[-i] > ssf[-i]:
-            ssf_at_cross = ssf[-i]  # Exact SSF_50 level on breakout week
-            bars_since = i - 1      # 0 = crossed on latest completed bar
-            
-            # Gain calculated relative to SSF_50 level
+            ssf_at_cross = ssf[-i]
+            bars_since = i - 1
             delta_pct = ((close[-1] - ssf_at_cross) / ssf_at_cross) * 100
             return delta_pct, bars_since
 
-    # 2. Fallback: Walk backward to find when price was last below SSF_50
     if close[-1] > ssf[-1]:
         for i in range(1, lookback):
             if close[-i] < ssf[-i]:
@@ -79,7 +71,6 @@ def get_crossover_details(close, ssf, max_lookback=50):
                 delta_pct = ((close[-1] - ssf_at_cross) / ssf_at_cross) * 100
                 return delta_pct, bars_since
         
-        # If continuously above SSF_50 for entire lookback
         ssf_at_cross = ssf[-lookback]
         delta_pct = ((close[-1] - ssf_at_cross) / ssf_at_cross) * 100
         return delta_pct, lookback
@@ -144,7 +135,9 @@ def check_ssf_two_weeks_ago_confirmed(df):
 def get_audit_data(stock_symbol, local_df):
     try:
         local_df = local_df.dropna(subset=['Close', 'High', 'Low', 'Volume'])
-        
+        if local_df.empty:
+            raise ValueError("Empty DataFrame after dropping NaNs")
+
         cmf_series = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20).chaikin_money_flow()
         current_cmf = cmf_series.iloc[-1] if not np.isnan(cmf_series.iloc[-1]) else cmf_series.iloc[-2]
         
@@ -162,8 +155,11 @@ def get_audit_data(stock_symbol, local_df):
         p_di = adx_ind.adx_pos().iloc[-1] if not np.isnan(adx_ind.adx_pos().iloc[-1]) else 0.0
         n_di = adx_ind.adx_neg().iloc[-1] if not np.isnan(adx_ind.adx_neg().iloc[-1]) else 0.0
 
-        vwap_series = (local_df['Volume'] * (local_df['High'] + local_df['Low'] + local_df['Close']) / 3).cumsum() / local_df['Volume'].cumsum()
-        vwap_val = vwap_series.iloc[-1] if not np.isnan(vwap_series.iloc[-1]) else current_close
+        # Rolling 20-Period VWAP Baseline Calculation
+        tp = (local_df['High'] + local_df['Low'] + local_df['Close']) / 3
+        vwap_series = (tp * local_df['Volume']).rolling(20).sum() / local_df['Volume'].rolling(20).sum()
+        current_vwap = vwap_series.iloc[-1] if not np.isnan(vwap_series.iloc[-1]) else current_close
+        vwap_delta_pct = ((current_close - current_vwap) / current_vwap) * 100
 
         bandwidth = 0.0 if np.isnan(bandwidth) else bandwidth
         ao = 0.0 if np.isnan(ao) else ao
@@ -182,10 +178,11 @@ def get_audit_data(stock_symbol, local_df):
 
         return [
             f"{bandwidth:.4f} ({sq_label})", f"{ao:.4f}% ({mo_label})", f"{current_cmf:.4f} ({inst_label})", 
-            get_verdict, bandwidth, ao, current_cmf, round(adx_val, 2), round(p_di, 2), round(n_di, 2), round(vwap_val, 2)
+            get_verdict, bandwidth, ao, current_cmf, round(adx_val, 2), round(p_di, 2), round(n_di, 2), 
+            round(current_vwap, 2), f"{vwap_delta_pct:.2f}%"
         ]
     except Exception:
-        return ["N/A", "N/A", "N/A", "ERROR", 0, 0, 0, 0, 0, 0, 0]
+        return ["N/A", "N/A", "N/A", "ERROR", 0, 0, 0, 0, 0, 0, 0, "0.00%"]
 
 def send_telegram_message(message):
     try:
@@ -205,7 +202,7 @@ def clean_val(val):
 # --- SHEET WIPING & RE-WRITING ENGINE (FOR SCANNER TABS) ---
 def update_sheet(sheet_name, data_list, delta_map=None, time_frame_label="Weeks"):
     try: sheet = spreadsheet.worksheet(sheet_name)
-    except Exception: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=14)
+    except Exception: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=15)
     
     prev_rows = sheet.get_all_values()
     history = {}
@@ -216,7 +213,7 @@ def update_sheet(sheet_name, data_list, delta_map=None, time_frame_label="Weeks"
 
     sheet.clear()
     time.sleep(2)
-    headers = [["Stock", "SSF 50 Cross Delta %", f"{time_frame_label} Since Cross", "Volatility (Squeeze)", "Momentum (AO %)", "Institutional (CMF)", "Rank Delta", "BW Delta", "AO Delta", "CMF Delta", "BOT VERDICT"]]
+    headers = [["Stock", "SSF 50 Cross Delta %", f"{time_frame_label} Since Cross", "Volatility (Squeeze)", "Momentum (AO %)", "Institutional (CMF)", "VWAP Delta %", "Rank Delta", "BW Delta", "AO Delta", "CMF Delta", "BOT VERDICT"]]
     rows = []
     
     if not data_list:
@@ -224,12 +221,13 @@ def update_sheet(sheet_name, data_list, delta_map=None, time_frame_label="Weeks"
         return
 
     for current_rank, stock in enumerate(data_list, start=1):
-        ticker = yf.Ticker(stock)
+        clean_stock = stock.strip().replace(".NS", "").replace(".BO", "")
+        ticker = yf.Ticker(f"{clean_stock}.NS")
         df = ticker.history(period="1y", interval="1wk")
         if not df.empty:
+            df = df.dropna(subset=['Close'])
             audit = get_audit_data(stock, df)
             
-            # Fetch SSF 50 Crossover details
             if delta_map and stock in delta_map:
                 c_delta_pct, bars_elapsed = delta_map[stock]
                 c_delta_str = f"{c_delta_pct:.2f}%"
@@ -249,7 +247,7 @@ def update_sheet(sheet_name, data_list, delta_map=None, time_frame_label="Weeks"
                 r_str, bw_delta, ao_delta, cmf_delta = "🆕 NEW", 0, 0, 0
 
             rows.append([
-                stock, c_delta_str, bars_str, audit[0], audit[1], audit[2], 
+                stock, c_delta_str, bars_str, audit[0], audit[1], audit[2], audit[11],
                 r_str, f"{bw_delta:.4f}", f"{ao_delta:.4f}%", f"{cmf_delta:.4f}", 
                 audit[3]
             ])
@@ -280,32 +278,35 @@ def update_portfolio_tracker():
 
     existing_rows = sheet.get_all_values()
     
-    if not existing_rows:
+    if not existing_rows or len(existing_rows) <= 1:
         sheet.update(range_name='A1', values=headers)
-        return
-
-    if existing_rows[0] != headers[0]:
-        sheet.update(range_name='A1', values=headers)
-
-    if len(existing_rows) <= 1:
         return
 
     updated_rows = []
     red_rows = []
 
     for idx, row in enumerate(existing_rows[1:], start=2):
-        if not row or not row[0].strip(): continue
-        stock = row[0].strip()
-        stock_symbol = stock if stock.endswith(".NS") or stock.endswith(".BO") else stock + ".NS"
+        if not row or not row[0].strip(): 
+            continue
+            
+        raw_stock = row[0].strip()
+        clean_stock = raw_stock.replace(".NS", "").replace(".BO", "")
+        stock_symbol = f"{clean_stock}.NS"
 
         try:
             df = yf.Ticker(stock_symbol).history(period="1y", interval="1wk")
+            if not df.empty:
+                df = df.dropna(subset=['Close'])
+
             if len(df) >= 20:
                 close_arr = df['Close'].values
                 ssf_20 = super_smoother(close_arr, 20)
                 
                 curr_close, curr_ssf20 = close_arr[-1], ssf_20[-1]
                 prev_close, prev_ssf20 = close_arr[-2], ssf_20[-2]
+
+                if np.isnan(curr_close) or np.isnan(curr_ssf20):
+                    raise ValueError("Calculated values returned NaN")
 
                 if prev_close > prev_ssf20 and curr_close < curr_ssf20:
                     status, action = "⚠️ BREACHED SSF_20", "SELL / EXIT NOW"
@@ -317,13 +318,13 @@ def update_portfolio_tracker():
                     status, action = "ABOVE SSF_20", "HOLD POSITION"
 
                 updated_rows.append([
-                    stock, f"INR {curr_close:.2f}", f"INR {curr_ssf20:.2f}", 
+                    raw_stock, f"INR {curr_close:.2f}", f"INR {curr_ssf20:.2f}", 
                     status, action, datetime.now().strftime("%Y-%m-%d %H:%M")
                 ])
             else:
-                updated_rows.append([stock, "NO DATA", "NO DATA", "INSUFFICIENT HISTORY", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
+                updated_rows.append([raw_stock, "NO DATA", "NO DATA", "INSUFFICIENT HISTORY", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
         except Exception:
-            updated_rows.append([stock, "ERROR", "ERROR", "FETCH FAILED", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
+            updated_rows.append([raw_stock, "ERROR", "ERROR", "FETCH FAILED", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
 
     sheet.update(range_name=f'A2:F{len(updated_rows)+1}', values=updated_rows)
 
@@ -371,9 +372,11 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                     if stock in ssf_2w: origins.append("SSF_Two_Weeks_Ago")
                     source_str = ", ".join(origins) if origins else "Runtime_Scanner_Pool"
 
-                    ticker = yf.Ticker(stock)
+                    clean_stock = stock.strip().replace(".NS", "").replace(".BO", "")
+                    ticker = yf.Ticker(f"{clean_stock}.NS")
                     df = ticker.history(period="1y", interval="1wk")
                     if df.empty: continue
+                    df = df.dropna(subset=['Close'])
                         
                     close_arr = df['Close'].values
                     df['SSF_50'] = super_smoother(close_arr, 50)
@@ -392,7 +395,7 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
                     
                     compiled_stock_data_context += f"""
                     === TICKER: {stock} (Strategy Sources: {source_str}) ===
-                    - Current Price: INR {df['Close'].iloc[-1]:.2f} | VWAP: INR {audit[10]}
+                    - Current Price: INR {df['Close'].iloc[-1]:.2f} | VWAP: INR {audit[10]} | VWAP Delta: {audit[11]}
                     - Trend Indicators: ADX (14) = {audit[7]} (+DI: {audit[8]}, -DI: {audit[9]})
                     - Oscillators & Squeeze: 14-Wk RSI = {rsi_current:.2f} | AO % = {audit[1]} | Bandwidth = {audit[0]}
                     - Orderflow & Volume: Chaikin Money Flow = {audit[2]} | Vol Ratio = {volume_ratio:.2f}x
@@ -456,7 +459,7 @@ def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
 # MAIN PIPELINE SCANNER
 # =====================================================================
 stocks_df = pd.read_csv("nse_stocks.csv")
-stocks = [s + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
+stocks = [s.strip().replace(".NS", "").replace(".BO", "") + ".NS" for s in stocks_df['SYMBOL'].dropna().tolist()]
 
 weekly_buy_scored, monthly_buy_scored = [], []
 coiled_spring_scored = [] 
@@ -476,6 +479,9 @@ for stock in stocks:
         raw_w = ticker.history(period=WEEKLY_HISTORY, interval="1wk")
         w_df = raw_w.copy() if (now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16)) else raw_w.iloc[:-1].copy()
 
+        if not w_df.empty:
+            w_df = w_df.dropna(subset=['Close'])
+
         if len(w_df) >= 300:
             w_close = w_df['Close'].values
             w_df['SSF_20'] = super_smoother(w_close, 20)
@@ -490,8 +496,6 @@ for stock in stocks:
                 rsi_w.iloc[-1] > rsi_ma_w.iloc[-1] and w_df['SSF_50'].iloc[-1] < w_df['SSF_200'].iloc[-1]):
                 
                 score = rsi_w.iloc[-1] + ((w_close[-1] - w_df['SSF_50'].iloc[-1]) / w_df['SSF_50'].iloc[-1]) * 100
-                
-                # Fetch SSF 50 Crossover Delta % and Weeks Elapsed
                 cross_delta_pct_w, weeks_since = get_crossover_details(w_close, w_df['SSF_50'].values, 6)
 
                 weekly_buy_scored.append((stock, score, cross_delta_pct_w, weeks_since))
@@ -515,6 +519,9 @@ for stock in stocks:
         raw_m = ticker.history(period=MONTHLY_HISTORY, interval="1mo")
         m_df = raw_m.iloc[:-1].copy() if not raw_m.empty else pd.DataFrame()
         
+        if not m_df.empty:
+            m_df = m_df.dropna(subset=['Close'])
+
         if len(m_df) >= 300: 
             m_close = m_df['Close'].values
             m_df['SSF_20'] = super_smoother(m_close, 20)
@@ -529,8 +536,6 @@ for stock in stocks:
                 rsi_m.iloc[-1] > rsi_ma_m.iloc[-1] and m_df['SSF_50'].iloc[-1] < m_df['SSF_200'].iloc[-1]):
                 
                 score_m = rsi_m.iloc[-1] + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
-                
-                # Fetch SSF 50 Crossover Delta % and Months Elapsed
                 cross_delta_pct_m, months_since = get_crossover_details(m_close, m_df['SSF_50'].values, 6)
 
                 monthly_buy_scored.append((stock, score_m, cross_delta_pct_m, months_since))
@@ -543,7 +548,6 @@ for stock in stocks:
                     ssf_two_months_ago.append(stock)
 
             if len(m_df) >= 2:
-                # Corrected scoping bug: m_df used for both SSF_20 and SSF_50
                 prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > m_df['SSF_50'].iloc[-2])
                 if prev_h_m and m_df['Close'].iloc[-1] < m_df['SSF_20'].iloc[-1]:
                     sell_signals.append(stock)
