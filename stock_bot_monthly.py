@@ -8,20 +8,11 @@ import gspread
 from google.oauth2.service_account import Credentials
 import requests
 from datetime import datetime
-from pydantic import BaseModel, Field
 import ta
 from ta.momentum import RSIIndicator, AwesomeOscillatorIndicator
 from ta.volatility import BollingerBands
 from ta.volume import ChaikinMoneyFlowIndicator
-from ta.trend import ADXIndicator
-
-# --- GOOGLE-GENAI SDK INITIALIZATION ---
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    print("Error: Please make sure 'google-genai' is installed in your environment.")
-    sys.exit(1)
+from ta.trend import ADXIndicator, MACD
 
 # --- SETTINGS & CONSTRAINTS ---
 MARKET_CAP_LIMIT = 5000 * 10**7
@@ -131,6 +122,29 @@ def check_ssf_two_weeks_ago_confirmed(df):
     remained_above = (df['Close'].iloc[-2] > df['SSF_50'].iloc[-2]) and (df['Close'].iloc[-1] > df['SSF_50'].iloc[-1])
     return crossed_two_weeks_ago and remained_above
 
+# --- NEW MACD MONTHLY BELOW ZERO STRATEGY ---
+def check_macd_monthly_below_zero(df, lookback=3):
+    """
+    Checks if MACD line recently crossed above Signal line within 'lookback' monthly bars,
+    while BOTH MACD line and Signal line were BELOW zero at the time of crossover.
+    """
+    if len(df) < 35: return False
+    
+    macd_ind = MACD(close=df['Close'], window_slow=26, window_fast=12, window_sign=9)
+    macd_line = macd_ind.macd()
+    signal_line = macd_ind.macd_signal()
+    
+    for i in range(1, lookback + 1):
+        prev_idx = -i - 1
+        curr_idx = -i
+        
+        # Crossover check: Previous MACD < Signal, Current MACD > Signal
+        if macd_line.iloc[prev_idx] < signal_line.iloc[prev_idx] and macd_line.iloc[curr_idx] > signal_line.iloc[curr_idx]:
+            # Below zero check: Both lines must be < 0 at the time of cross
+            if macd_line.iloc[curr_idx] < 0 and signal_line.iloc[curr_idx] < 0:
+                return True
+    return False
+
 # --- TECHNICAL AUDIT DATA EXTRACTION ---
 def get_audit_data(stock_symbol, local_df):
     try:
@@ -155,7 +169,6 @@ def get_audit_data(stock_symbol, local_df):
         p_di = adx_ind.adx_pos().iloc[-1] if not np.isnan(adx_ind.adx_pos().iloc[-1]) else 0.0
         n_di = adx_ind.adx_neg().iloc[-1] if not np.isnan(adx_ind.adx_neg().iloc[-1]) else 0.0
 
-        # Rolling 20-Period VWAP Baseline Calculation
         tp = (local_df['High'] + local_df['Low'] + local_df['Close']) / 3
         vwap_series = (tp * local_df['Volume']).rolling(20).sum() / local_df['Volume'].rolling(20).sum()
         current_vwap = vwap_series.iloc[-1] if not np.isnan(vwap_series.iloc[-1]) else current_close
@@ -199,7 +212,7 @@ def clean_val(val):
     try: return float(val.split(' ')[0].replace('%', ''))
     except Exception: return 0.0
 
-# --- SHEET WIPING & RE-WRITING ENGINE (FOR SCANNER TABS) ---
+# --- SHEET WIPING & RE-WRITING ENGINE (DYNAMIC CALCULATION FIX FOR N/A) ---
 def update_sheet(sheet_name, data_list, delta_map=None, time_frame_label="Weeks"):
     try: sheet = spreadsheet.worksheet(sheet_name)
     except Exception: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=15)
@@ -220,21 +233,33 @@ def update_sheet(sheet_name, data_list, delta_map=None, time_frame_label="Weeks"
         sheet.update(range_name='A1', values=[["No Stocks"]])
         return
 
+    is_monthly = (time_frame_label.lower() == "months")
+    interval = "1mo" if is_monthly else "1wk"
+
     for current_rank, stock in enumerate(data_list, start=1):
         clean_stock = stock.strip().replace(".NS", "").replace(".BO", "")
         ticker = yf.Ticker(f"{clean_stock}.NS")
-        df = ticker.history(period="1y", interval="1wk")
+        df = ticker.history(period="5y" if is_monthly else "1y", interval=interval)
+        
         if not df.empty:
             df = df.dropna(subset=['Close'])
             audit = get_audit_data(stock, df)
             
+            # Fetch or Dynamically Compute Delta and Elapsed Bars to Fix 'N/A'
             if delta_map and stock in delta_map:
                 c_delta_pct, bars_elapsed = delta_map[stock]
                 c_delta_str = f"{c_delta_pct:.2f}%"
                 bars_str = f"{bars_elapsed}"
             else:
-                c_delta_str = "N/A"
-                bars_str = "N/A"
+                if len(df) >= 50:
+                    close_arr = df['Close'].values
+                    ssf_50 = super_smoother(close_arr, 50)
+                    c_delta_pct, bars_elapsed = get_crossover_details(close_arr, ssf_50, max_lookback=50)
+                    c_delta_str = f"{c_delta_pct:.2f}%"
+                    bars_str = f"{bars_elapsed}"
+                else:
+                    c_delta_str = "N/A"
+                    bars_str = "N/A"
 
             if stock in history:
                 prev = history[stock]
@@ -264,7 +289,7 @@ def simple_update(sheet_name, data_list):
     sheet.update(range_name='A1', values=(headers + rows))
 
 # =====================================================================
-# SAFE PORTFOLIO TRACKER ENGINE (PRESERVES EXISTING USER ROWS)
+# SAFE PORTFOLIO TRACKER ENGINE (WEEKLY & MONTHLY)
 # =====================================================================
 def update_portfolio_tracker():
     headers = [["Stock", "Current Price", "SSF_20 Level", "SSF_20 Breach Status", "Action", "Last Updated"]]
@@ -273,11 +298,9 @@ def update_portfolio_tracker():
     except Exception:
         sheet = spreadsheet.add_worksheet(title="Portfolio_Tracker", rows=500, cols=6)
         sheet.update(range_name='A1', values=headers)
-        print("Portfolio_Tracker initialized.")
         return
 
     existing_rows = sheet.get_all_values()
-    
     if not existing_rows or len(existing_rows) <= 1:
         sheet.update(range_name='A1', values=headers)
         return
@@ -286,27 +309,22 @@ def update_portfolio_tracker():
     red_rows = []
 
     for idx, row in enumerate(existing_rows[1:], start=2):
-        if not row or not row[0].strip(): 
-            continue
-            
+        if not row or not row[0].strip(): continue
         raw_stock = row[0].strip()
         clean_stock = raw_stock.replace(".NS", "").replace(".BO", "")
         stock_symbol = f"{clean_stock}.NS"
 
         try:
             df = yf.Ticker(stock_symbol).history(period="1y", interval="1wk")
-            if not df.empty:
-                df = df.dropna(subset=['Close'])
+            if not df.empty: df = df.dropna(subset=['Close'])
 
             if len(df) >= 20:
                 close_arr = df['Close'].values
                 ssf_20 = super_smoother(close_arr, 20)
-                
                 curr_close, curr_ssf20 = close_arr[-1], ssf_20[-1]
                 prev_close, prev_ssf20 = close_arr[-2], ssf_20[-2]
 
-                if np.isnan(curr_close) or np.isnan(curr_ssf20):
-                    raise ValueError("Calculated values returned NaN")
+                if np.isnan(curr_close) or np.isnan(curr_ssf20): raise ValueError("NaN detected")
 
                 if prev_close > prev_ssf20 and curr_close < curr_ssf20:
                     status, action = "⚠️ BREACHED SSF_20", "SELL / EXIT NOW"
@@ -317,10 +335,7 @@ def update_portfolio_tracker():
                 else:
                     status, action = "ABOVE SSF_20", "HOLD POSITION"
 
-                updated_rows.append([
-                    raw_stock, f"INR {curr_close:.2f}", f"INR {curr_ssf20:.2f}", 
-                    status, action, datetime.now().strftime("%Y-%m-%d %H:%M")
-                ])
+                updated_rows.append([raw_stock, f"INR {curr_close:.2f}", f"INR {curr_ssf20:.2f}", status, action, datetime.now().strftime("%Y-%m-%d %H:%M")])
             else:
                 updated_rows.append([raw_stock, "NO DATA", "NO DATA", "INSUFFICIENT HISTORY", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
         except Exception:
@@ -334,126 +349,70 @@ def update_portfolio_tracker():
             sheet.batch_format(format_requests)
         except Exception: pass
 
-# --- ADVANCED AI STRUCTURED SCHEMAS & DEEP DIVE ENGINE ---
-class SwingMomentumAnalysis(BaseModel):
-    ticker: str = Field(description="Ticker symbol")
-    signal_source_list: str = Field(description="Strategy sources (e.g. Top_Weekly, SSF_Two_Weeks_Ago)")
-    overall_score: int = Field(description="Overall Quantitative Momentum Score from 0 to 100 combining technicals & macro outlook.")
-    comprehensive_momentum_drivers: str = Field(description="Detailed analysis of ADX trend strength, VWAP position, AO momentum expansion, and price velocity.")
-    institutional_risk_analysis: str = Field(description="Evaluation of CMF institutional order flow, volume trends, and macro headwinds.")
-    investment_verdict: str = Field(description="Definitive rating: STRONG BUY, ACCUMULATE, HOLD, or AVOID with target profit and dynamic stop loss coordinates.")
-
-class PortfolioAuditPayload(BaseModel):
-    analyses: list[SwingMomentumAnalysis]
-
-def run_batch_portfolio_ai_audit(unified_stock_list, top_w, rest_w, ssf_2w):
-    if not unified_stock_list: return []
-
-    try: sheet = spreadsheet.worksheet("AI_SSF_2Weeks_Deep_Dive")
-    except Exception: sheet = spreadsheet.add_worksheet(title="AI_SSF_2Weeks_Deep_Dive", rows=1000, cols=6)
-    
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key: return []
-
-    ai_client = genai.Client(api_key=api_key)
-    all_final_rows = []
-    
-    CHUNK_SIZE = 15
-    stock_chunks = [unified_stock_list[i:i + CHUNK_SIZE] for i in range(0, len(unified_stock_list), CHUNK_SIZE)]
-
-    for idx, chunk in enumerate(stock_chunks, start=1):
-        try:
-            compiled_stock_data_context = ""
-            for stock in chunk:
-                try:
-                    origins = []
-                    if stock in top_w: origins.append("Top_Weekly")
-                    if stock in rest_w: origins.append("Rest_Weekly")
-                    if stock in ssf_2w: origins.append("SSF_Two_Weeks_Ago")
-                    source_str = ", ".join(origins) if origins else "Runtime_Scanner_Pool"
-
-                    clean_stock = stock.strip().replace(".NS", "").replace(".BO", "")
-                    ticker = yf.Ticker(f"{clean_stock}.NS")
-                    df = ticker.history(period="1y", interval="1wk")
-                    if df.empty: continue
-                    df = df.dropna(subset=['Close'])
-                        
-                    close_arr = df['Close'].values
-                    df['SSF_50'] = super_smoother(close_arr, 50)
-                    
-                    current_volume = df['Volume'].iloc[-1]
-                    avg_volume_20 = df['Volume'].rolling(window=20).mean().iloc[-1]
-                    volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 1.0
-                    
-                    rsi_vals = RSIIndicator(close=df['Close'], window=14).rsi()
-                    rsi_current = rsi_vals.iloc[-1] if not np.isnan(rsi_vals.iloc[-1]) else 50.0
-                    
-                    audit = get_audit_data(stock, df)
-                    
-                    support_52wk = df['Low'].rolling(window=52, min_periods=1).min().iloc[-1]
-                    resistance_52wk = df['High'].rolling(window=52, min_periods=1).max().iloc[-1]
-                    
-                    compiled_stock_data_context += f"""
-                    === TICKER: {stock} (Strategy Sources: {source_str}) ===
-                    - Current Price: INR {df['Close'].iloc[-1]:.2f} | VWAP: INR {audit[10]} | VWAP Delta: {audit[11]}
-                    - Trend Indicators: ADX (14) = {audit[7]} (+DI: {audit[8]}, -DI: {audit[9]})
-                    - Oscillators & Squeeze: 14-Wk RSI = {rsi_current:.2f} | AO % = {audit[1]} | Bandwidth = {audit[0]}
-                    - Orderflow & Volume: Chaikin Money Flow = {audit[2]} | Vol Ratio = {volume_ratio:.2f}x
-                    - Support/Resistance: 52-Wk Low = INR {support_52wk:.2f} | 52-Wk High = INR {resistance_52wk:.2f}
-                    """
-                except Exception: continue
-
-            if not compiled_stock_data_context.strip(): continue
-
-            prompt = f"""
-            You are a Senior Quantitative Portfolio Manager and Strategic Macro Trader.
-            
-            Evaluate every single ticker provided below. Perform a thorough analysis by combining:
-            1. Advanced Technical Indicators: ADX trend strength (>25 indicates strong trend), +DI vs -DI direction, price vs VWAP benchmark, CMF institutional accumulation, and RSI momentum.
-            2. Macro & Sector Insights: Current broader market environment, interest rate trends, sector dynamics, and commodity/economic factors affecting Indian equities (NSE).
-
-            INSTRUCTIONS:
-            - Compute a comprehensive Quantitative Momentum Score (0-100).
-            - Deliver actionable insights on momentum drivers, volume structure, and risk factors.
-            - State a definitive investment verdict (e.g. STRONG BUY, ACCUMULATE, HOLD, or AVOID) along with precise technical stop-loss and price target coordinates.
-
-            PAYLOAD DATA:
-            {compiled_stock_data_context}
-            """
-
-            config = types.GenerateContentConfig(
-                temperature=0.1,
-                response_mime_type="application/json",
-                response_schema=PortfolioAuditPayload,
-            )
-            
-            response = ai_client.models.generate_content(
-                model='gemini-2.5-flash', contents=prompt, config=config
-            )
-            
-            result_payload = PortfolioAuditPayload.model_validate_json(response.text)
-            for item in result_payload.analyses:
-                all_final_rows.append([
-                    item.ticker, item.signal_source_list, item.overall_score,
-                    item.comprehensive_momentum_drivers, item.institutional_risk_analysis,
-                    item.investment_verdict
-                ])
-                
-        except Exception as e:
-            print(f"AI Batch Execution Error: {e}")
-
-        if idx < len(stock_chunks):
-            time.sleep(10)
+def update_portfolio_tracker_monthly():
+    headers = [["Stock", "Current Price", "Monthly SSF_20 Level", "SSF_20 Breach Status", "Action", "Last Updated"]]
+    try:
+        sheet = spreadsheet.worksheet("Portfolio_Tracker_Monthly")
+    except Exception:
+        sheet = spreadsheet.add_worksheet(title="Portfolio_Tracker_Monthly", rows=500, cols=6)
+        sheet.update(range_name='A1', values=headers)
+        return
 
     try:
-        sheet.clear()
-        time.sleep(2)
-        headers = [["Stock", "Source Strategy", "Overall Score (/100)", "Comprehensive Momentum Drivers", "Institutional Risk & Volume Analysis", "Investment Verdict & Trade Coordinates"]]
-        sheet.update(range_name='A1', values=(headers + all_final_rows))
-    except Exception as e:
-        print(f"Spreadsheet write error: {e}")
+        base_sheet = spreadsheet.worksheet("Portfolio_Tracker")
+        existing_rows = base_sheet.get_all_values()
+    except Exception:
+        existing_rows = sheet.get_all_values()
 
-    return all_final_rows
+    if not existing_rows or len(existing_rows) <= 1:
+        sheet.update(range_name='A1', values=headers)
+        return
+
+    updated_rows = []
+    red_rows = []
+
+    for idx, row in enumerate(existing_rows[1:], start=2):
+        if not row or not row[0].strip(): continue
+        raw_stock = row[0].strip()
+        clean_stock = raw_stock.replace(".NS", "").replace(".BO", "")
+        stock_symbol = f"{clean_stock}.NS"
+
+        try:
+            df = yf.Ticker(stock_symbol).history(period="5y", interval="1mo")
+            if not df.empty: df = df.dropna(subset=['Close'])
+
+            if len(df) >= 20:
+                close_arr = df['Close'].values
+                ssf_20 = super_smoother(close_arr, 20)
+                curr_close, curr_ssf20 = close_arr[-1], ssf_20[-1]
+                prev_close, prev_ssf20 = close_arr[-2], ssf_20[-2]
+
+                if np.isnan(curr_close) or np.isnan(curr_ssf20): raise ValueError("NaN detected")
+
+                if prev_close > prev_ssf20 and curr_close < curr_ssf20:
+                    status, action = "⚠️ BREACHED MONTHLY SSF_20", "MACRO EXIT NOW"
+                    red_rows.append(idx)
+                elif curr_close < curr_ssf20:
+                    status, action = "BELOW MONTHLY SSF_20", "BEAR MARKET / HOLD CASH"
+                    red_rows.append(idx)
+                else:
+                    status, action = "ABOVE MONTHLY SSF_20", "STRONG MACRO TREND"
+
+                updated_rows.append([raw_stock, f"INR {curr_close:.2f}", f"INR {curr_ssf20:.2f}", status, action, datetime.now().strftime("%Y-%m-%d %H:%M")])
+            else:
+                updated_rows.append([raw_stock, "NO DATA", "NO DATA", "INSUFFICIENT HISTORY", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
+        except Exception:
+            updated_rows.append([raw_stock, "ERROR", "ERROR", "FETCH FAILED", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
+
+    sheet.clear()
+    time.sleep(1)
+    sheet.update(range_name='A1', values=(headers + updated_rows))
+
+    if red_rows:
+        try:
+            format_requests = [{"range": f"A{r}:F{r}", "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}, "textFormat": {"bold": True}}} for r in red_rows]
+            sheet.batch_format(format_requests)
+        except Exception: pass
 
 # =====================================================================
 # MAIN PIPELINE SCANNER
@@ -469,6 +428,7 @@ ssf_special_weekly = []
 ssf_special_monthly = []
 ssf_two_weeks_ago = []
 ssf_two_months_ago = []
+macd_monthly_below_zero = []  # New Strategy Target Array
 
 for stock in stocks:
     print(f"Scanning {stock}...")
@@ -522,6 +482,11 @@ for stock in stocks:
         if not m_df.empty:
             m_df = m_df.dropna(subset=['Close'])
 
+        if len(m_df) >= 35:
+            # Check for Monthly MACD Bullish Crossover Below Zero
+            if check_macd_monthly_below_zero(m_df, lookback=3):
+                macd_monthly_below_zero.append(stock)
+
         if len(m_df) >= 300: 
             m_close = m_df['Close'].values
             m_df['SSF_20'] = super_smoother(m_close, 20)
@@ -570,29 +535,21 @@ update_sheet("Top_Weekly", top_weekly, delta_map=cross_delta_map_weekly, time_fr
 update_sheet("Rest_Weekly", rest_weekly, delta_map=cross_delta_map_weekly, time_frame_label="Weeks")
 update_sheet("Top_Monthly", top_monthly, delta_map=cross_delta_map_monthly, time_frame_label="Months")
 update_sheet("Rest_Monthly", rest_monthly, delta_map=cross_delta_map_monthly, time_frame_label="Months")
-update_sheet("Coiled_Spring_Top", coiled_spring_top)
-update_sheet("SSF_Special_Weekly", ssf_special_weekly)
-update_sheet("SSF_Special_Monthly", ssf_special_monthly)
-update_sheet("SSF_Two_Weeks_Ago", ssf_two_weeks_ago)
-update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago)
+update_sheet("Coiled_Spring_Top", coiled_spring_top, time_frame_label="Weeks")
+update_sheet("SSF_Special_Weekly", ssf_special_weekly, time_frame_label="Weeks")
+update_sheet("SSF_Special_Monthly", ssf_special_monthly, time_frame_label="Months")
+update_sheet("SSF_Two_Weeks_Ago", ssf_two_weeks_ago, time_frame_label="Weeks")
+update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago, time_frame_label="Months")
+update_sheet("MACD_Monthly_Below_Zero", macd_monthly_below_zero, time_frame_label="Months")
+
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
-# Safe Update of Portfolio Tracker
+# Safe Update of Portfolio Trackers (Weekly & Monthly)
 update_portfolio_tracker()
+update_portfolio_tracker_monthly()
 
-# Run AI Deep Dive Batch Audit
-unified_pool = list(set(top_weekly + rest_weekly + ssf_two_weeks_ago))
-batch_ai_results = run_batch_portfolio_ai_audit(
-    unified_stock_list=unified_pool,
-    top_w=top_weekly,
-    rest_w=rest_weekly,
-    ssf_2w=ssf_two_weeks_ago
-)
-
-# =====================================================================
-# INDIVIDUAL TELEGRAM NOTIFICATIONS
-# =====================================================================
+# Telegram Output
 send_telegram_message(f"🚀 Top Weekly Buy:\n{top_weekly}")
 time.sleep(1)
 send_telegram_message(f"📈 Rest Weekly Buy:\n{rest_weekly}")
@@ -610,6 +567,8 @@ time.sleep(1)
 send_telegram_message(f"⏳ SSF Two Weeks Ago Confirmed:\n{ssf_two_weeks_ago}")
 time.sleep(1)
 send_telegram_message(f"⌛ SSF Two Months Ago Confirmed:\n{ssf_two_months_ago}")
+time.sleep(1)
+send_telegram_message(f"📉 MACD Monthly Bullish Cross (Below Zero):\n{macd_monthly_below_zero}")
 time.sleep(1)
 send_telegram_message(f"⚠️ Weekly Sell Signals:\n{weekly_sell_signals}")
 time.sleep(1)
