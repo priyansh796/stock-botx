@@ -122,7 +122,7 @@ def check_ssf_two_weeks_ago_confirmed(df):
     remained_above = (df['Close'].iloc[-2] > df['SSF_50'].iloc[-2]) and (df['Close'].iloc[-1] > df['SSF_50'].iloc[-1])
     return crossed_two_weeks_ago and remained_above
 
-# --- NEW MACD MONTHLY BELOW ZERO STRATEGY ---
+# --- MACD MONTHLY BELOW ZERO STRATEGY ---
 def check_macd_monthly_below_zero(df, lookback=3):
     """
     Checks if MACD line recently crossed above Signal line within 'lookback' monthly bars,
@@ -212,7 +212,7 @@ def clean_val(val):
     try: return float(val.split(' ')[0].replace('%', ''))
     except Exception: return 0.0
 
-# --- SHEET WIPING & RE-WRITING ENGINE (DYNAMIC CALCULATION FIX FOR N/A) ---
+# --- SHEET WIPING & RE-WRITING ENGINE ---
 def update_sheet(sheet_name, data_list, delta_map=None, time_frame_label="Weeks"):
     try: sheet = spreadsheet.worksheet(sheet_name)
     except Exception: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=15)
@@ -289,7 +289,7 @@ def simple_update(sheet_name, data_list):
     sheet.update(range_name='A1', values=(headers + rows))
 
 # =====================================================================
-# SAFE PORTFOLIO TRACKER ENGINE (WEEKLY & MONTHLY)
+# SAFE PORTFOLIO TRACKER ENGINE (WEEKLY & MONTHLY INDEPENDENT)
 # =====================================================================
 def update_portfolio_tracker():
     headers = [["Stock", "Current Price", "SSF_20 Level", "SSF_20 Breach Status", "Action", "Last Updated"]]
@@ -358,11 +358,8 @@ def update_portfolio_tracker_monthly():
         sheet.update(range_name='A1', values=headers)
         return
 
-    try:
-        base_sheet = spreadsheet.worksheet("Portfolio_Tracker")
-        existing_rows = base_sheet.get_all_values()
-    except Exception:
-        existing_rows = sheet.get_all_values()
+    # READ DIRECTLY FROM PORTFOLIO_TRACKER_MONTHLY SHEET ONLY (Prevents Copying Weekly Stocks)
+    existing_rows = sheet.get_all_values()
 
     if not existing_rows or len(existing_rows) <= 1:
         sheet.update(range_name='A1', values=headers)
@@ -404,9 +401,8 @@ def update_portfolio_tracker_monthly():
         except Exception:
             updated_rows.append([raw_stock, "ERROR", "ERROR", "FETCH FAILED", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
 
-    sheet.clear()
-    time.sleep(1)
-    sheet.update(range_name='A1', values=(headers + updated_rows))
+    # Updates data while maintaining user stock entries in Column A
+    sheet.update(range_name=f'A2:F{len(updated_rows)+1}', values=updated_rows)
 
     if red_rows:
         try:
@@ -428,7 +424,7 @@ ssf_special_weekly = []
 ssf_special_monthly = []
 ssf_two_weeks_ago = []
 ssf_two_months_ago = []
-macd_monthly_below_zero = []  # New Strategy Target Array
+macd_monthly_below_zero = []
 
 for stock in stocks:
     print(f"Scanning {stock}...")
@@ -483,7 +479,6 @@ for stock in stocks:
             m_df = m_df.dropna(subset=['Close'])
 
         if len(m_df) >= 35:
-            # Check for Monthly MACD Bullish Crossover Below Zero
             if check_macd_monthly_below_zero(m_df, lookback=3):
                 macd_monthly_below_zero.append(stock)
 
@@ -545,7 +540,7 @@ update_sheet("MACD_Monthly_Below_Zero", macd_monthly_below_zero, time_frame_labe
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
-# Safe Update of Portfolio Trackers (Weekly & Monthly)
+# Safe Update of Portfolio Trackers (Weekly & Monthly Independent)
 update_portfolio_tracker()
 update_portfolio_tracker_monthly()
 
