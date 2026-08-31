@@ -138,7 +138,11 @@ def check_macd_monthly_below_zero(df, lookback=3):
                 return True
     return False
 
-def check_macd_weekly_below_zero(df, lookback=3):
+def check_macd_weekly_crossover_recent(df, lookback=3):
+    """
+    Checks if a weekly MACD bullish crossover happened max `lookback` weeks ago
+    (either below zero or above zero).
+    """
     if len(df) < 35: return False
     macd_ind = MACD(close=df['Close'], window_slow=26, window_fast=12, window_sign=9)
     macd_line = macd_ind.macd()
@@ -148,8 +152,7 @@ def check_macd_weekly_below_zero(df, lookback=3):
         prev_idx = -i - 1
         curr_idx = -i
         if macd_line.iloc[prev_idx] < signal_line.iloc[prev_idx] and macd_line.iloc[curr_idx] > signal_line.iloc[curr_idx]:
-            if macd_line.iloc[curr_idx] < 0 and signal_line.iloc[curr_idx] < 0:
-                return True
+            return True
     return False
 
 # =====================================================================
@@ -296,56 +299,6 @@ def simple_update(sheet_name, data_list):
     rows = [[s] for s in data_list]
     sheet.update(range_name='A1', values=(headers + rows))
 
-def update_macd_dual_confirmed_sheet(dual_stocks):
-    sheet_name = "MACD_Dual_Confirmed"
-    try: sheet = spreadsheet.worksheet(sheet_name)
-    except Exception: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=500, cols=8)
-    
-    sheet.clear()
-    time.sleep(2)
-
-    headers = [["Stock", "Current Price", "Weekly MACD", "Monthly MACD", "Status", "Vol Squeeze", "Inst CMF", "Last Updated"]]
-    if not dual_stocks:
-        sheet.update(range_name='A1', values=[["No Dual MACD Confirmed Stocks Found"]])
-        return
-
-    rows = []
-    for stock in dual_stocks:
-        clean_stock = stock.strip().replace(".NS", "").replace(".BO", "")
-        ticker = yf.Ticker(f"{clean_stock}.NS")
-        df = ticker.history(period="1y", interval="1wk")
-        
-        curr_price_str = "N/A"
-        audit = ["N/A", "N/A", "N/A", "N/A"]
-        
-        if not df.empty:
-            df = df.dropna(subset=['Close'])
-            curr_price = df['Close'].iloc[-1]
-            curr_price_str = f"INR {curr_price:.2f}"
-            audit = get_audit_data(stock, df)
-
-        rows.append([
-            stock, 
-            curr_price_str, 
-            "BULLISH (BUY)", 
-            "BULLISH (BUY)", 
-            "🎯 BUY CONFIRMED", 
-            audit[0], 
-            audit[2], 
-            datetime.now().strftime("%Y-%m-%d %H:%M")
-        ])
-
-    sheet.update(range_name='A1', values=(headers + rows))
-    
-    format_requests = [{
-        "range": f"A2:H{len(rows)+1}", 
-        "format": {"backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}, "textFormat": {"bold": True}}
-    }]
-    try:
-        sheet.batch_format(format_requests)
-    except Exception:
-        pass
-
 # =====================================================================
 # PORTFOLIO TRACKERS
 # =====================================================================
@@ -439,10 +392,9 @@ def update_portfolio_tracker_monthly():
             curr_close, curr_ssf20 = close_arr[-1], ssf_20[-1]
             prev_close, prev_ssf20 = close_arr[-2], ssf_20[-2]
 
-            # Monthly MACD
-            m_macd_ind = MACD(close=m_df['Close'], window_slow=26, window_fast=12, window_sign=9)
-            monthly_macd_buy = (m_macd_ind.macd().iloc[-1] > m_macd_ind.macd_signal().iloc[-1])
-            m_macd_status = "BULLISH (BUY)" if monthly_macd_buy else "BEARISH"
+            # Check Monthly MACD Below Zero Crossover
+            m_macd_below_zero_buy = check_macd_monthly_below_zero(m_df, lookback=3)
+            m_macd_status = "BULLISH (<0 CROSS)" if m_macd_below_zero_buy else "BEARISH / NO CROSS"
 
             # Fetch Weekly Data
             w_df = t.history(period="2y", interval="1wk")
@@ -453,10 +405,9 @@ def update_portfolio_tracker_monthly():
             if not (now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16)):
                 w_df = w_df.iloc[:-1].copy()
 
-            # Weekly MACD
-            w_macd_ind = MACD(close=w_df['Close'], window_slow=26, window_fast=12, window_sign=9)
-            weekly_macd_buy = (w_macd_ind.macd().iloc[-1] > w_macd_ind.macd_signal().iloc[-1])
-            w_macd_status = "BULLISH (BUY)" if weekly_macd_buy else "BEARISH"
+            # Check Recent Weekly MACD Crossover (max 3 weeks ago)
+            w_macd_recent_cross = check_macd_weekly_crossover_recent(w_df, lookback=3)
+            w_macd_status = "RECENT CROSS (<=3 WKS)" if w_macd_recent_cross else "NO RECENT CROSS"
 
             # SSF 20 Sell Signal Checks
             if prev_close > prev_ssf20 and curr_close < curr_ssf20:
@@ -465,7 +416,8 @@ def update_portfolio_tracker_monthly():
             elif curr_close < curr_ssf20:
                 status_action = "BEAR MARKET / HOLD CASH"
                 red_rows.append(idx)
-            elif monthly_macd_buy and weekly_macd_buy:
+            # Highlight GREEN ONLY if it satisfies the updated Dual Below Zero criteria
+            elif m_macd_below_zero_buy and w_macd_recent_cross:
                 status_action = "🎯 BUY (DUAL CONFIRMED)"
                 green_rows.append(idx)
             else:
@@ -518,7 +470,6 @@ ssf_special_monthly = []
 ssf_two_weeks_ago = []
 ssf_two_months_ago = []
 macd_monthly_below_zero = []
-macd_dual_confirmed_stocks = []
 macd_dual_below_zero_confirmed_stocks = []
 
 for stock in stocks:
@@ -533,13 +484,10 @@ for stock in stocks:
         if not w_df.empty:
             w_df = w_df.dropna(subset=['Close'])
 
-        # Check Weekly MACD
-        w_macd_buy = False
-        w_macd_below_zero_buy = False
+        # Check Recent Weekly MACD Crossover (max 3 weeks ago, above or below zero)
+        w_macd_recent_cross = False
         if len(w_df) >= 35:
-            w_macd_ind = MACD(close=w_df['Close'], window_slow=26, window_fast=12, window_sign=9)
-            w_macd_buy = (w_macd_ind.macd().iloc[-1] > w_macd_ind.macd_signal().iloc[-1])
-            w_macd_below_zero_buy = check_macd_weekly_below_zero(w_df, lookback=3)
+            w_macd_recent_cross = check_macd_weekly_crossover_recent(w_df, lookback=3)
 
         if len(w_df) >= 300:
             w_close = w_df['Close'].values
@@ -581,23 +529,15 @@ for stock in stocks:
         if not m_df.empty:
             m_df = m_df.dropna(subset=['Close'])
 
-        # Check Monthly MACD & Dual Confirmation
-        m_macd_buy = False
+        # Check Monthly MACD Below Zero Crossover
         m_macd_below_zero_buy = False
         if len(m_df) >= 35:
-            m_macd_ind = MACD(close=m_df['Close'], window_slow=26, window_fast=12, window_sign=9)
-            m_macd_buy = (m_macd_ind.macd().iloc[-1] > m_macd_ind.macd_signal().iloc[-1])
-
             m_macd_below_zero_buy = check_macd_monthly_below_zero(m_df, lookback=3)
             if m_macd_below_zero_buy:
                 macd_monthly_below_zero.append(stock)
 
-        # Append to Dual Confirmed list if BOTH are true
-        if w_macd_buy and m_macd_buy:
-            macd_dual_confirmed_stocks.append(stock)
-
-        # Append to Dual Below Zero Confirmed list if BOTH Monthly and Weekly MACD Below Zero conditions are true
-        if m_macd_below_zero_buy and w_macd_below_zero_buy:
+        # Updated Dual Condition: Monthly MACD < 0 Cross AND Weekly MACD Cross (max 3 weeks ago)
+        if m_macd_below_zero_buy and w_macd_recent_cross:
             macd_dual_below_zero_confirmed_stocks.append(stock)
 
         if len(m_df) >= 300: 
@@ -656,9 +596,6 @@ update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago, time_frame_label="Months"
 update_sheet("MACD_Monthly_Below_Zero", macd_monthly_below_zero, time_frame_label="Months")
 update_sheet("MACD_Dual_Below_Zero_Confirmed", macd_dual_below_zero_confirmed_stocks, time_frame_label="Weeks")
 
-# Dedicated Dual MACD Confirmed Sheet Update
-update_macd_dual_confirmed_sheet(macd_dual_confirmed_stocks)
-
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
@@ -687,9 +624,7 @@ send_telegram_message(f"⌛ SSF Two Months Ago Confirmed:\n{ssf_two_months_ago}"
 time.sleep(1)
 send_telegram_message(f"📉 MACD Monthly Bullish Cross (Below Zero):\n{macd_monthly_below_zero}")
 time.sleep(1)
-send_telegram_message(f"🎯 Dual MACD Confirmed (Weekly + Monthly Buy):\n{macd_dual_confirmed_stocks}")
-time.sleep(1)
-send_telegram_message(f"🎯 MACD Dual Below Zero Confirmed (Weekly + Monthly < 0):\n{macd_dual_below_zero_confirmed_stocks}")
+send_telegram_message(f"🎯 MACD Dual Below Zero Confirmed (Monthly < 0 + Recent Weekly Cross <= 3 Wks):\n{macd_dual_below_zero_confirmed_stocks}")
 time.sleep(1)
 send_telegram_message(f"⚠️ Weekly Sell Signals:\n{weekly_sell_signals}")
 time.sleep(1)
