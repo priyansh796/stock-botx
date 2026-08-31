@@ -14,7 +14,9 @@ from ta.volatility import BollingerBands
 from ta.volume import ChaikinMoneyFlowIndicator
 from ta.trend import ADXIndicator, MACD
 
-# --- SETTINGS & CONSTRAINTS ---
+# =====================================================================
+# SETTINGS & CONSTRAINTS
+# =====================================================================
 MARKET_CAP_LIMIT = 5000 * 10**7
 MONTHLY_HISTORY = "max"
 WEEKLY_HISTORY = "max"
@@ -122,14 +124,8 @@ def check_ssf_two_weeks_ago_confirmed(df):
     remained_above = (df['Close'].iloc[-2] > df['SSF_50'].iloc[-2]) and (df['Close'].iloc[-1] > df['SSF_50'].iloc[-1])
     return crossed_two_weeks_ago and remained_above
 
-# --- MACD MONTHLY BELOW ZERO STRATEGY ---
 def check_macd_monthly_below_zero(df, lookback=3):
-    """
-    Checks if MACD line recently crossed above Signal line within 'lookback' monthly bars,
-    while BOTH MACD line and Signal line were BELOW zero at the time of crossover.
-    """
     if len(df) < 35: return False
-    
     macd_ind = MACD(close=df['Close'], window_slow=26, window_fast=12, window_sign=9)
     macd_line = macd_ind.macd()
     signal_line = macd_ind.macd_signal()
@@ -137,20 +133,18 @@ def check_macd_monthly_below_zero(df, lookback=3):
     for i in range(1, lookback + 1):
         prev_idx = -i - 1
         curr_idx = -i
-        
-        # Crossover check: Previous MACD < Signal, Current MACD > Signal
         if macd_line.iloc[prev_idx] < signal_line.iloc[prev_idx] and macd_line.iloc[curr_idx] > signal_line.iloc[curr_idx]:
-            # Below zero check: Both lines must be < 0 at the time of cross
             if macd_line.iloc[curr_idx] < 0 and signal_line.iloc[curr_idx] < 0:
                 return True
     return False
 
-# --- TECHNICAL AUDIT DATA EXTRACTION ---
+# =====================================================================
+# TECHNICAL AUDIT DATA EXTRACTION
+# =====================================================================
 def get_audit_data(stock_symbol, local_df):
     try:
         local_df = local_df.dropna(subset=['Close', 'High', 'Low', 'Volume'])
-        if local_df.empty:
-            raise ValueError("Empty DataFrame after dropping NaNs")
+        if local_df.empty: raise ValueError("Empty DataFrame")
 
         cmf_series = ChaikinMoneyFlowIndicator(high=local_df['High'], low=local_df['Low'], close=local_df['Close'], volume=local_df['Volume'], window=20).chaikin_money_flow()
         current_cmf = cmf_series.iloc[-1] if not np.isnan(cmf_series.iloc[-1]) else cmf_series.iloc[-2]
@@ -203,7 +197,9 @@ def send_telegram_message(message):
         requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
     except Exception: pass
 
-# --- GOOGLE SHEETS CONNECTOR ---
+# =====================================================================
+# GOOGLE SHEETS CONNECTOR & UPDATERS
+# =====================================================================
 creds = Credentials.from_service_account_file("credentials.json", scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
 client_gspread = gspread.authorize(creds)
 spreadsheet = client_gspread.open(SPREADSHEET_NAME)
@@ -212,7 +208,6 @@ def clean_val(val):
     try: return float(val.split(' ')[0].replace('%', ''))
     except Exception: return 0.0
 
-# --- SHEET WIPING & RE-WRITING ENGINE ---
 def update_sheet(sheet_name, data_list, delta_map=None, time_frame_label="Weeks"):
     try: sheet = spreadsheet.worksheet(sheet_name)
     except Exception: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=15)
@@ -245,7 +240,6 @@ def update_sheet(sheet_name, data_list, delta_map=None, time_frame_label="Weeks"
             df = df.dropna(subset=['Close'])
             audit = get_audit_data(stock, df)
             
-            # Fetch or Dynamically Compute Delta and Elapsed Bars to Fix 'N/A'
             if delta_map and stock in delta_map:
                 c_delta_pct, bars_elapsed = delta_map[stock]
                 c_delta_str = f"{c_delta_pct:.2f}%"
@@ -289,12 +283,65 @@ def simple_update(sheet_name, data_list):
     sheet.update(range_name='A1', values=(headers + rows))
 
 # =====================================================================
-# SAFE PORTFOLIO TRACKER ENGINE (WEEKLY & MONTHLY INDEPENDENT)
+# DEDICATED DUAL MACD CONFIRMED SHEET UPDATER
+# =====================================================================
+def update_macd_dual_confirmed_sheet(dual_stocks):
+    sheet_name = "MACD_Dual_Confirmed"
+    try: sheet = spreadsheet.worksheet(sheet_name)
+    except Exception: sheet = spreadsheet.add_worksheet(title=sheet_name, rows=500, cols=8)
+    
+    sheet.clear()
+    time.sleep(2)
+
+    headers = [["Stock", "Current Price", "Weekly MACD", "Monthly MACD", "Status", "Vol Squeeze", "Inst CMF", "Last Updated"]]
+    if not dual_stocks:
+        sheet.update(range_name='A1', values=[["No Dual MACD Confirmed Stocks Found"]])
+        return
+
+    rows = []
+    for stock in dual_stocks:
+        clean_stock = stock.strip().replace(".NS", "").replace(".BO", "")
+        ticker = yf.Ticker(f"{clean_stock}.NS")
+        df = ticker.history(period="1y", interval="1wk")
+        
+        curr_price_str = "N/A"
+        audit = ["N/A", "N/A", "N/A", "N/A"]
+        
+        if not df.empty:
+            df = df.dropna(subset=['Close'])
+            curr_price = df['Close'].iloc[-1]
+            curr_price_str = f"INR {curr_price:.2f}"
+            audit = get_audit_data(stock, df)
+
+        rows.append([
+            stock, 
+            curr_price_str, 
+            "BULLISH (BUY)", 
+            "BULLISH (BUY)", 
+            "🎯 BUY CONFIRMED", 
+            audit[0], 
+            audit[2], 
+            datetime.now().strftime("%Y-%m-%d %H:%M")
+        ])
+
+    sheet.update(range_name='A1', values=(headers + rows))
+    
+    # Highlight all active confirmed buy rows in green
+    format_requests = [{
+        "range": f"A2:H{len(rows)+1}", 
+        "format": {"backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}, "textFormat": {"bold": True}}
+    }]
+    try:
+        sheet.batch_format(format_requests)
+    except Exception:
+        pass
+
+# =====================================================================
+# PORTFOLIO TRACKERS
 # =====================================================================
 def update_portfolio_tracker():
     headers = [["Stock", "Current Price", "SSF_20 Level", "SSF_20 Breach Status", "Action", "Last Updated"]]
-    try:
-        sheet = spreadsheet.worksheet("Portfolio_Tracker")
+    try: sheet = spreadsheet.worksheet("Portfolio_Tracker")
     except Exception:
         sheet = spreadsheet.add_worksheet(title="Portfolio_Tracker", rows=500, cols=6)
         sheet.update(range_name='A1', values=headers)
@@ -305,9 +352,7 @@ def update_portfolio_tracker():
         sheet.update(range_name='A1', values=headers)
         return
 
-    updated_rows = []
-    red_rows = []
-
+    updated_rows, red_rows = [], []
     for idx, row in enumerate(existing_rows[1:], start=2):
         if not row or not row[0].strip(): continue
         raw_stock = row[0].strip()
@@ -342,7 +387,6 @@ def update_portfolio_tracker():
             updated_rows.append([raw_stock, "ERROR", "ERROR", "FETCH FAILED", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
 
     sheet.update(range_name=f'A2:F{len(updated_rows)+1}', values=updated_rows)
-
     if red_rows:
         try:
             format_requests = [{"range": f"A{r}:F{r}", "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}, "textFormat": {"bold": True}}} for r in red_rows]
@@ -350,23 +394,21 @@ def update_portfolio_tracker():
         except Exception: pass
 
 def update_portfolio_tracker_monthly():
-    headers = [["Stock", "Current Price", "Monthly SSF_20 Level", "SSF_20 Breach Status", "Action", "Last Updated"]]
-    try:
-        sheet = spreadsheet.worksheet("Portfolio_Tracker_Monthly")
+    headers = [["Stock", "Current Price", "Monthly SSF_20 Level", "Weekly MACD Status", "Monthly MACD Status", "Action", "Last Updated"]]
+    try: sheet = spreadsheet.worksheet("Portfolio_Tracker_Monthly")
     except Exception:
-        sheet = spreadsheet.add_worksheet(title="Portfolio_Tracker_Monthly", rows=500, cols=6)
+        sheet = spreadsheet.add_worksheet(title="Portfolio_Tracker_Monthly", rows=500, cols=7)
         sheet.update(range_name='A1', values=headers)
         return
 
-    # READ DIRECTLY FROM PORTFOLIO_TRACKER_MONTHLY SHEET ONLY (Prevents Copying Weekly Stocks)
     existing_rows = sheet.get_all_values()
-
     if not existing_rows or len(existing_rows) <= 1:
         sheet.update(range_name='A1', values=headers)
         return
 
     updated_rows = []
     red_rows = []
+    green_rows = []
 
     for idx, row in enumerate(existing_rows[1:], start=2):
         if not row or not row[0].strip(): continue
@@ -375,40 +417,81 @@ def update_portfolio_tracker_monthly():
         stock_symbol = f"{clean_stock}.NS"
 
         try:
-            df = yf.Ticker(stock_symbol).history(period="5y", interval="1mo")
-            if not df.empty: df = df.dropna(subset=['Close'])
+            t = yf.Ticker(stock_symbol)
+            
+            # Fetch Monthly Data
+            m_df = t.history(period="5y", interval="1mo")
+            if m_df.empty or len(m_df) < 35: raise ValueError("Insufficient monthly data")
+            m_df = m_df.dropna(subset=['Close']).copy()
 
-            if len(df) >= 20:
-                close_arr = df['Close'].values
-                ssf_20 = super_smoother(close_arr, 20)
-                curr_close, curr_ssf20 = close_arr[-1], ssf_20[-1]
-                prev_close, prev_ssf20 = close_arr[-2], ssf_20[-2]
+            close_arr = m_df['Close'].values
+            ssf_20 = super_smoother(close_arr, 20)
+            curr_close, curr_ssf20 = close_arr[-1], ssf_20[-1]
+            prev_close, prev_ssf20 = close_arr[-2], ssf_20[-2]
 
-                if np.isnan(curr_close) or np.isnan(curr_ssf20): raise ValueError("NaN detected")
+            # Monthly MACD
+            m_macd_ind = MACD(close=m_df['Close'], window_slow=26, window_fast=12, window_sign=9)
+            monthly_macd_buy = (m_macd_ind.macd().iloc[-1] > m_macd_ind.macd_signal().iloc[-1])
+            m_macd_status = "BULLISH (BUY)" if monthly_macd_buy else "BEARISH"
 
-                if prev_close > prev_ssf20 and curr_close < curr_ssf20:
-                    status, action = "⚠️ BREACHED MONTHLY SSF_20", "MACRO EXIT NOW"
-                    red_rows.append(idx)
-                elif curr_close < curr_ssf20:
-                    status, action = "BELOW MONTHLY SSF_20", "BEAR MARKET / HOLD CASH"
-                    red_rows.append(idx)
-                else:
-                    status, action = "ABOVE MONTHLY SSF_20", "STRONG MACRO TREND"
+            # Fetch Weekly Data
+            w_df = t.history(period="2y", interval="1wk")
+            if w_df.empty or len(w_df) < 35: raise ValueError("Insufficient weekly data")
+            w_df = w_df.dropna(subset=['Close']).copy()
 
-                updated_rows.append([raw_stock, f"INR {curr_close:.2f}", f"INR {curr_ssf20:.2f}", status, action, datetime.now().strftime("%Y-%m-%d %H:%M")])
+            now = datetime.now()
+            if not (now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16)):
+                w_df = w_df.iloc[:-1].copy()
+
+            # Weekly MACD
+            w_macd_ind = MACD(close=w_df['Close'], window_slow=26, window_fast=12, window_sign=9)
+            weekly_macd_buy = (w_macd_ind.macd().iloc[-1] > w_macd_ind.macd_signal().iloc[-1])
+            w_macd_status = "BULLISH (BUY)" if weekly_macd_buy else "BEARISH"
+
+            # SSF 20 Sell Signal Checks
+            if prev_close > prev_ssf20 and curr_close < curr_ssf20:
+                status_action = "MACRO EXIT NOW"
+                red_rows.append(idx)
+            elif curr_close < curr_ssf20:
+                status_action = "BEAR MARKET / HOLD CASH"
+                red_rows.append(idx)
+            elif monthly_macd_buy and weekly_macd_buy:
+                status_action = "🎯 BUY (DUAL CONFIRMED)"
+                green_rows.append(idx)
             else:
-                updated_rows.append([raw_stock, "NO DATA", "NO DATA", "INSUFFICIENT HISTORY", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
+                status_action = "STRONG MACRO TREND"
+
+            updated_rows.append([
+                raw_stock, 
+                f"INR {curr_close:.2f}", 
+                f"INR {curr_ssf20:.2f}", 
+                w_macd_status, 
+                m_macd_status, 
+                status_action, 
+                datetime.now().strftime("%Y-%m-%d %H:%M")
+            ])
         except Exception:
-            updated_rows.append([raw_stock, "ERROR", "ERROR", "FETCH FAILED", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
+            updated_rows.append([raw_stock, "ERROR", "ERROR", "FETCH FAILED", "FETCH FAILED", "NONE", datetime.now().strftime("%Y-%m-%d %H:%M")])
 
-    # Updates data while maintaining user stock entries in Column A
-    sheet.update(range_name=f'A2:F{len(updated_rows)+1}', values=updated_rows)
+    sheet.update(range_name=f'A2:G{len(updated_rows)+1}', values=updated_rows)
 
-    if red_rows:
+    format_requests = []
+    for r in red_rows:
+        format_requests.append({
+            "range": f"A{r}:G{r}", 
+            "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}, "textFormat": {"bold": True}}
+        })
+    for g in green_rows:
+        format_requests.append({
+            "range": f"A{g}:G{g}", 
+            "format": {"backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}, "textFormat": {"bold": True}}
+        })
+
+    if format_requests:
         try:
-            format_requests = [{"range": f"A{r}:F{r}", "format": {"backgroundColor": {"red": 1.0, "green": 0.8, "blue": 0.8}, "textFormat": {"bold": True}}} for r in red_rows]
             sheet.batch_format(format_requests)
-        except Exception: pass
+        except Exception:
+            pass
 
 # =====================================================================
 # MAIN PIPELINE SCANNER
@@ -425,6 +508,7 @@ ssf_special_monthly = []
 ssf_two_weeks_ago = []
 ssf_two_months_ago = []
 macd_monthly_below_zero = []
+macd_dual_confirmed_stocks = []
 
 for stock in stocks:
     print(f"Scanning {stock}...")
@@ -437,6 +521,12 @@ for stock in stocks:
 
         if not w_df.empty:
             w_df = w_df.dropna(subset=['Close'])
+
+        # Check Weekly MACD
+        w_macd_buy = False
+        if len(w_df) >= 35:
+            w_macd_ind = MACD(close=w_df['Close'], window_slow=26, window_fast=12, window_sign=9)
+            w_macd_buy = (w_macd_ind.macd().iloc[-1] > w_macd_ind.macd_signal().iloc[-1])
 
         if len(w_df) >= 300:
             w_close = w_df['Close'].values
@@ -478,9 +568,18 @@ for stock in stocks:
         if not m_df.empty:
             m_df = m_df.dropna(subset=['Close'])
 
+        # Check Monthly MACD & Dual Confirmation
+        m_macd_buy = False
         if len(m_df) >= 35:
+            m_macd_ind = MACD(close=m_df['Close'], window_slow=26, window_fast=12, window_sign=9)
+            m_macd_buy = (m_macd_ind.macd().iloc[-1] > m_macd_ind.macd_signal().iloc[-1])
+
             if check_macd_monthly_below_zero(m_df, lookback=3):
                 macd_monthly_below_zero.append(stock)
+
+        # Append to Dual Confirmed list if BOTH are true
+        if w_macd_buy and m_macd_buy:
+            macd_dual_confirmed_stocks.append(stock)
 
         if len(m_df) >= 300: 
             m_close = m_df['Close'].values
@@ -508,7 +607,7 @@ for stock in stocks:
                     ssf_two_months_ago.append(stock)
 
             if len(m_df) >= 2:
-                prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > m_df['SSF_50'].iloc[-2])
+                prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
                 if prev_h_m and m_df['Close'].iloc[-1] < m_df['SSF_20'].iloc[-1]:
                     sell_signals.append(stock)
     except Exception:
@@ -525,7 +624,7 @@ top_monthly, rest_monthly = [x[0] for x in monthly_buy_scored[:5]], [x[0] for x 
 
 coiled_spring_top = [x[0] for x in sorted(coiled_spring_scored, key=lambda x: x[1], reverse=True)[:10]]
 
-# Wipe & Re-write Dynamic Scanner Output Tabs
+# Update Output Tabs
 update_sheet("Top_Weekly", top_weekly, delta_map=cross_delta_map_weekly, time_frame_label="Weeks")
 update_sheet("Rest_Weekly", rest_weekly, delta_map=cross_delta_map_weekly, time_frame_label="Weeks")
 update_sheet("Top_Monthly", top_monthly, delta_map=cross_delta_map_monthly, time_frame_label="Months")
@@ -537,10 +636,13 @@ update_sheet("SSF_Two_Weeks_Ago", ssf_two_weeks_ago, time_frame_label="Weeks")
 update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago, time_frame_label="Months")
 update_sheet("MACD_Monthly_Below_Zero", macd_monthly_below_zero, time_frame_label="Months")
 
+# Dedicated Dual MACD Confirmed Sheet Update
+update_macd_dual_confirmed_sheet(macd_dual_confirmed_stocks)
+
 simple_update("Weekly_Sell", weekly_sell_signals)
 simple_update("Sell_Signals", sell_signals)
 
-# Safe Update of Portfolio Trackers (Weekly & Monthly Independent)
+# Safe Update of Portfolio Trackers
 update_portfolio_tracker()
 update_portfolio_tracker_monthly()
 
@@ -564,6 +666,8 @@ time.sleep(1)
 send_telegram_message(f"⌛ SSF Two Months Ago Confirmed:\n{ssf_two_months_ago}")
 time.sleep(1)
 send_telegram_message(f"📉 MACD Monthly Bullish Cross (Below Zero):\n{macd_monthly_below_zero}")
+time.sleep(1)
+send_telegram_message(f"🎯 Dual MACD Confirmed (Weekly + Monthly Buy):\n{macd_dual_confirmed_stocks}")
 time.sleep(1)
 send_telegram_message(f"⚠️ Weekly Sell Signals:\n{weekly_sell_signals}")
 time.sleep(1)
