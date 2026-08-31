@@ -138,6 +138,20 @@ def check_macd_monthly_below_zero(df, lookback=3):
                 return True
     return False
 
+def check_macd_weekly_below_zero(df, lookback=3):
+    if len(df) < 35: return False
+    macd_ind = MACD(close=df['Close'], window_slow=26, window_fast=12, window_sign=9)
+    macd_line = macd_ind.macd()
+    signal_line = macd_ind.macd_signal()
+    
+    for i in range(1, lookback + 1):
+        prev_idx = -i - 1
+        curr_idx = -i
+        if macd_line.iloc[prev_idx] < signal_line.iloc[prev_idx] and macd_line.iloc[curr_idx] > signal_line.iloc[curr_idx]:
+            if macd_line.iloc[curr_idx] < 0 and signal_line.iloc[curr_idx] < 0:
+                return True
+    return False
+
 # =====================================================================
 # TECHNICAL AUDIT DATA EXTRACTION
 # =====================================================================
@@ -282,9 +296,6 @@ def simple_update(sheet_name, data_list):
     rows = [[s] for s in data_list]
     sheet.update(range_name='A1', values=(headers + rows))
 
-# =====================================================================
-# DEDICATED DUAL MACD CONFIRMED SHEET UPDATER
-# =====================================================================
 def update_macd_dual_confirmed_sheet(dual_stocks):
     sheet_name = "MACD_Dual_Confirmed"
     try: sheet = spreadsheet.worksheet(sheet_name)
@@ -326,7 +337,6 @@ def update_macd_dual_confirmed_sheet(dual_stocks):
 
     sheet.update(range_name='A1', values=(headers + rows))
     
-    # Highlight all active confirmed buy rows in green
     format_requests = [{
         "range": f"A2:H{len(rows)+1}", 
         "format": {"backgroundColor": {"red": 0.8, "green": 1.0, "blue": 0.8}, "textFormat": {"bold": True}}
@@ -509,6 +519,7 @@ ssf_two_weeks_ago = []
 ssf_two_months_ago = []
 macd_monthly_below_zero = []
 macd_dual_confirmed_stocks = []
+macd_dual_below_zero_confirmed_stocks = []
 
 for stock in stocks:
     print(f"Scanning {stock}...")
@@ -524,9 +535,11 @@ for stock in stocks:
 
         # Check Weekly MACD
         w_macd_buy = False
+        w_macd_below_zero_buy = False
         if len(w_df) >= 35:
             w_macd_ind = MACD(close=w_df['Close'], window_slow=26, window_fast=12, window_sign=9)
             w_macd_buy = (w_macd_ind.macd().iloc[-1] > w_macd_ind.macd_signal().iloc[-1])
+            w_macd_below_zero_buy = check_macd_weekly_below_zero(w_df, lookback=3)
 
         if len(w_df) >= 300:
             w_close = w_df['Close'].values
@@ -570,16 +583,22 @@ for stock in stocks:
 
         # Check Monthly MACD & Dual Confirmation
         m_macd_buy = False
+        m_macd_below_zero_buy = False
         if len(m_df) >= 35:
             m_macd_ind = MACD(close=m_df['Close'], window_slow=26, window_fast=12, window_sign=9)
             m_macd_buy = (m_macd_ind.macd().iloc[-1] > m_macd_ind.macd_signal().iloc[-1])
 
-            if check_macd_monthly_below_zero(m_df, lookback=3):
+            m_macd_below_zero_buy = check_macd_monthly_below_zero(m_df, lookback=3)
+            if m_macd_below_zero_buy:
                 macd_monthly_below_zero.append(stock)
 
         # Append to Dual Confirmed list if BOTH are true
         if w_macd_buy and m_macd_buy:
             macd_dual_confirmed_stocks.append(stock)
+
+        # Append to Dual Below Zero Confirmed list if BOTH Monthly and Weekly MACD Below Zero conditions are true
+        if m_macd_below_zero_buy and w_macd_below_zero_buy:
+            macd_dual_below_zero_confirmed_stocks.append(stock)
 
         if len(m_df) >= 300: 
             m_close = m_df['Close'].values
@@ -635,6 +654,7 @@ update_sheet("SSF_Special_Monthly", ssf_special_monthly, time_frame_label="Month
 update_sheet("SSF_Two_Weeks_Ago", ssf_two_weeks_ago, time_frame_label="Weeks")
 update_sheet("SSF_Two_Months_Ago", ssf_two_months_ago, time_frame_label="Months")
 update_sheet("MACD_Monthly_Below_Zero", macd_monthly_below_zero, time_frame_label="Months")
+update_sheet("MACD_Dual_Below_Zero_Confirmed", macd_dual_below_zero_confirmed_stocks, time_frame_label="Weeks")
 
 # Dedicated Dual MACD Confirmed Sheet Update
 update_macd_dual_confirmed_sheet(macd_dual_confirmed_stocks)
@@ -668,6 +688,8 @@ time.sleep(1)
 send_telegram_message(f"📉 MACD Monthly Bullish Cross (Below Zero):\n{macd_monthly_below_zero}")
 time.sleep(1)
 send_telegram_message(f"🎯 Dual MACD Confirmed (Weekly + Monthly Buy):\n{macd_dual_confirmed_stocks}")
+time.sleep(1)
+send_telegram_message(f"🎯 MACD Dual Below Zero Confirmed (Weekly + Monthly < 0):\n{macd_dual_below_zero_confirmed_stocks}")
 time.sleep(1)
 send_telegram_message(f"⚠️ Weekly Sell Signals:\n{weekly_sell_signals}")
 time.sleep(1)
