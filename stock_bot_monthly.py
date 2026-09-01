@@ -70,11 +70,11 @@ def get_crossover_details(close, ssf, max_lookback=50):
 
     return 0.0, 0
 
+# MODIFIED: Replaced 250 with 100 as requested
 def rolling_setup_monthly(df, lookback):
     for i in range(1, lookback):
         if (df['Close'].iloc[-i] < df['SSF_50'].iloc[-i] and 
-            df['Close'].iloc[-i] < df['SSF_100'].iloc[-i] and 
-            df['Close'].iloc[-i] < df['SSF_250'].iloc[-i]):
+            df['Close'].iloc[-i] < df['SSF_100'].iloc[-i]):
             return True
     return False
 
@@ -102,13 +102,14 @@ def check_ssf_special_weekly(df):
             break
     return cross_found
 
+# MODIFIED: Replaced 250 with 100 as requested
 def check_ssf_special_monthly(df):
     if len(df) < 4: return False
     current_close = df['Close'].iloc[-1]
     current_ssf50 = df['SSF_50'].iloc[-1]
     current_ssf200 = df['SSF_200'].iloc[-1]
-    current_ssf250 = df['SSF_250'].iloc[-1]
-    if not (current_close > current_ssf50 and current_close > current_ssf200 and current_close > current_ssf250): return False
+    current_ssf100 = df['SSF_100'].iloc[-1]
+    if not (current_close > current_ssf50 and current_close > current_ssf200 and current_close > current_ssf100): return False
     cross_found = False
     for i in range(1, 4):
         prev_idx = -i - 1
@@ -138,11 +139,11 @@ def check_macd_monthly_below_zero(df, lookback=3):
                 return True
     return False
 
-def check_macd_weekly_rising_and_above(df):
+# MODIFIED: Lookback set to 5 weeks for MACD Crossover (above or below 0)
+def check_macd_weekly_crossover(df, lookback=5):
     """
-    Checks if Weekly MACD Line is:
-    1. Above the Signal Line (macd > signal)
-    2. Sloping Upwards (current MACD > previous MACD)
+    Checks if a Weekly MACD Line crossed above the Signal Line 
+    within the last 5 weeks (either above or below zero).
     """
     if len(df) < 35: 
         return False
@@ -151,17 +152,12 @@ def check_macd_weekly_rising_and_above(df):
     macd_line = macd_ind.macd()
     signal_line = macd_ind.macd_signal()
     
-    curr_macd = macd_line.iloc[-1]
-    prev_macd = macd_line.iloc[-2]
-    curr_signal = signal_line.iloc[-1]
-    
-    if np.isnan(curr_macd) or np.isnan(prev_macd) or np.isnan(curr_signal):
-        return False
-        
-    is_above = curr_macd > curr_signal
-    is_rising = curr_macd > prev_macd
-    
-    return is_above and is_rising
+    for i in range(1, lookback + 1):
+        prev_idx = -i - 1
+        curr_idx = -i
+        if macd_line.iloc[prev_idx] < signal_line.iloc[prev_idx] and macd_line.iloc[curr_idx] > signal_line.iloc[curr_idx]:
+            return True
+    return False
 
 # =====================================================================
 # TECHNICAL AUDIT DATA EXTRACTION
@@ -413,9 +409,9 @@ def update_portfolio_tracker_monthly():
             if not (now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16)):
                 w_df = w_df.iloc[:-1].copy()
 
-            # Check Weekly MACD is Above Signal & Rising
-            w_macd_rising_and_above = check_macd_weekly_rising_and_above(w_df)
-            w_macd_status = "ABOVE & RISING" if w_macd_rising_and_above else "FLAT / BELOW"
+            # MODIFIED: Check Weekly MACD Crossover in last 5 weeks
+            w_macd_crossover = check_macd_weekly_crossover(w_df, lookback=5)
+            w_macd_status = "BULLISH CROSS (5 WKS)" if w_macd_crossover else "NO CROSS"
 
             # SSF 20 Sell Signal Checks
             if prev_close > prev_ssf20 and curr_close < curr_ssf20:
@@ -424,8 +420,8 @@ def update_portfolio_tracker_monthly():
             elif curr_close < curr_ssf20:
                 status_action = "BEAR MARKET / HOLD CASH"
                 red_rows.append(idx)
-            # Highlight GREEN ONLY if both Monthly MACD < 0 Cross and Weekly MACD Rising & Above match
-            elif m_macd_below_zero_buy and w_macd_rising_and_above:
+            # Highlight GREEN ONLY if both Monthly MACD < 0 Cross and Weekly MACD Cross (5 wks) match
+            elif m_macd_below_zero_buy and w_macd_crossover:
                 status_action = "🎯 BUY (DUAL CONFIRMED)"
                 green_rows.append(idx)
             else:
@@ -492,10 +488,10 @@ for stock in stocks:
         if not w_df.empty:
             w_df = w_df.dropna(subset=['Close'])
 
-        # Check Weekly MACD is Above Signal & Rising
-        w_macd_rising_and_above = False
+        # MODIFIED: Weekly MACD Crossover in last 5 weeks (above or below zero)
+        w_macd_crossover = False
         if len(w_df) >= 35:
-            w_macd_rising_and_above = check_macd_weekly_rising_and_above(w_df)
+            w_macd_crossover = check_macd_weekly_crossover(w_df, lookback=5)
 
         if len(w_df) >= 300:
             w_close = w_df['Close'].values
@@ -544,22 +540,21 @@ for stock in stocks:
             if m_macd_below_zero_buy:
                 macd_monthly_below_zero.append(stock)
 
-        # Updated Dual Condition: Monthly MACD < 0 Cross AND Weekly MACD Above Signal & Rising
-        if m_macd_below_zero_buy and w_macd_rising_and_above:
+        # Dual Condition: Monthly MACD < 0 Cross AND Weekly MACD Cross (last 5 weeks)
+        if m_macd_below_zero_buy and w_macd_crossover:
             macd_dual_below_zero_confirmed_stocks.append(stock)
 
-        if len(m_df) >= 300: 
+        # MODIFIED: Calculating SSF up to 100 instead of 250 for monthly
+        if len(m_df) >= 100: 
             m_close = m_df['Close'].values
             m_df['SSF_20'] = super_smoother(m_close, 20)
             m_df['SSF_50'] = super_smoother(m_close, 50)
             m_df['SSF_100'] = super_smoother(m_close, 100)
-            m_df['SSF_200'] = super_smoother(m_close, 200)
-            m_df['SSF_250'] = super_smoother(m_close, 250)
             
             rsi_m = RSIIndicator(m_df['Close'], window=14).rsi()
             rsi_ma_m = rsi_m.rolling(14).mean()
             if (rolling_setup_monthly(m_df, 20) and rolling_cross(m_close, m_df['SSF_50'].values, 6) and 
-                rsi_m.iloc[-1] > rsi_ma_m.iloc[-1] and m_df['SSF_50'].iloc[-1] < m_df['SSF_200'].iloc[-1]):
+                rsi_m.iloc[-1] > rsi_ma_m.iloc[-1]):
                 
                 score_m = rsi_m.iloc[-1] + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
                 cross_delta_pct_m, months_since = get_crossover_details(m_close, m_df['SSF_50'].values, 6)
@@ -569,7 +564,7 @@ for stock in stocks:
             if check_ssf_special_monthly(m_df):
                 ssf_special_monthly.append(stock)
 
-            if rolling_setup_monthly(m_df, 20) and m_df['SSF_50'].iloc[-1] < m_df['SSF_200'].iloc[-1]:
+            if rolling_setup_monthly(m_df, 20):
                 if check_ssf_two_weeks_ago_confirmed(m_df):
                     ssf_two_months_ago.append(stock)
 
@@ -632,7 +627,7 @@ send_telegram_message(f"⌛ SSF Two Months Ago Confirmed:\n{ssf_two_months_ago}"
 time.sleep(1)
 send_telegram_message(f"📉 MACD Monthly Bullish Cross (Below Zero):\n{macd_monthly_below_zero}")
 time.sleep(1)
-send_telegram_message(f"🎯 MACD Dual Below Zero Confirmed (Monthly < 0 Cross + Weekly MACD Above & Rising):\n{macd_dual_below_zero_confirmed_stocks}")
+send_telegram_message(f"🎯 MACD Dual Below Zero Confirmed (Monthly < 0 Cross + Weekly MACD Cross in 5 Wks):\n{macd_dual_below_zero_confirmed_stocks}")
 time.sleep(1)
 send_telegram_message(f"⚠️ Weekly Sell Signals:\n{weekly_sell_signals}")
 time.sleep(1)
