@@ -401,7 +401,7 @@ def update_portfolio_tracker_monthly():
             curr_close, curr_ssf20 = close_arr[-1], ssf_20[-1]
             prev_close, prev_ssf20 = close_arr[-2], ssf_20[-2]
 
-            # Check Monthly MACD Below Zero Crossover (Lookback = 3)
+            # Check Monthly MACD Below Zero Crossover
             m_macd_below_zero_buy = check_macd_monthly_below_zero(m_df, lookback=3)
             m_macd_status = "BULLISH (<0 CROSS)" if m_macd_below_zero_buy else "BEARISH / NO CROSS"
 
@@ -508,7 +508,6 @@ for stock in stocks:
 
             rsi_w = RSIIndicator(w_df['Close'], window=14).rsi()
             rsi_ma_w = rsi_w.rolling(14).mean()
-            # UPDATED: Cross lookback set to 6 weeks for weekly timeframe
             if (rolling_setup_weekly(w_df, 20) and rolling_cross(w_close, w_df['SSF_50'].values, 6) and 
                 rsi_w.iloc[-1] > rsi_ma_w.iloc[-1] and w_df['SSF_50'].iloc[-1] < w_df['SSF_200'].iloc[-1]):
                 
@@ -539,7 +538,7 @@ for stock in stocks:
         if not m_df.empty:
             m_df = m_df.dropna(subset=['Close'])
 
-        # Check Monthly MACD Below Zero Crossover (Lookback = 3 months)
+        # Check Monthly MACD Below Zero Crossover
         m_macd_below_zero_buy = False
         if len(m_df) >= 35:
             m_macd_below_zero_buy = check_macd_monthly_below_zero(m_df, lookback=3)
@@ -558,12 +557,11 @@ for stock in stocks:
             
             rsi_m = RSIIndicator(m_df['Close'], window=14).rsi()
             rsi_ma_m = rsi_m.rolling(14).mean()
-            # UPDATED: Cross lookback set to 3 months for monthly timeframe
-            if (rolling_setup_monthly(m_df, 20) and rolling_cross(m_close, m_df['SSF_50'].values, 3) and 
+            if (rolling_setup_monthly(m_df, 20) and rolling_cross(m_close, m_df['SSF_50'].values, 6) and 
                 rsi_m.iloc[-1] > rsi_ma_m.iloc[-1]):
                 
                 score_m = rsi_m.iloc[-1] + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
-                cross_delta_pct_m, months_since = get_crossover_details(m_close, m_df['SSF_50'].values, 3)
+                cross_delta_pct_m, months_since = get_crossover_details(m_close, m_df['SSF_50'].values, 6)
 
                 monthly_buy_scored.append((stock, score_m, cross_delta_pct_m, months_since))
             
@@ -575,7 +573,8 @@ for stock in stocks:
                     ssf_two_months_ago.append(stock)
 
             if len(m_df) >= 2:
-                prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > w_df['SSF_50'].iloc[-2])
+                # FIXED BUG: Changed w_df['SSF_50'] to m_df['SSF_50']
+                prev_h_m = (m_df['Close'].iloc[-2] > m_df['SSF_20'].iloc[-2] and m_df['Close'].iloc[-2] > m_df['SSF_50'].iloc[-2])
                 if prev_h_m and m_df['Close'].iloc[-1] < m_df['SSF_20'].iloc[-1]:
                     sell_signals.append(stock)
     except Exception:
