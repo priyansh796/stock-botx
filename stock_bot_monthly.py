@@ -70,11 +70,18 @@ def get_crossover_details(close, ssf, max_lookback=50):
 
     return 0.0, 0
 
-# MODIFIED: Replaced 250 with 100 as requested
+# MODIFIED: Strict sequence checking (SSF 100 > SSF 50 > Price during lookback)
 def rolling_setup_monthly(df, lookback):
+    """
+    Checks if earlier during the lookback period, SSF 100 was the highest value,
+    SSF 50 was the next, and the Price was below both (SSF 100 > SSF 50 > Close).
+    """
     for i in range(1, lookback):
-        if (df['Close'].iloc[-i] < df['SSF_50'].iloc[-i] and 
-            df['Close'].iloc[-i] < df['SSF_100'].iloc[-i]):
+        close_val = df['Close'].iloc[-i]
+        ssf50_val = df['SSF_50'].iloc[-i]
+        ssf100_val = df['SSF_100'].iloc[-i]
+        
+        if (ssf100_val > ssf50_val) and (close_val < ssf50_val) and (close_val < ssf100_val):
             return True
     return False
 
@@ -102,7 +109,6 @@ def check_ssf_special_weekly(df):
             break
     return cross_found
 
-# MODIFIED: Replaced 250 with 100 as requested
 def check_ssf_special_monthly(df):
     if len(df) < 4: return False
     current_close = df['Close'].iloc[-1]
@@ -139,7 +145,6 @@ def check_macd_monthly_below_zero(df, lookback=3):
                 return True
     return False
 
-# MODIFIED: Lookback set to 5 weeks for MACD Crossover (above or below 0)
 def check_macd_weekly_crossover(df, lookback=5):
     """
     Checks if a Weekly MACD Line crossed above the Signal Line 
@@ -396,7 +401,7 @@ def update_portfolio_tracker_monthly():
             curr_close, curr_ssf20 = close_arr[-1], ssf_20[-1]
             prev_close, prev_ssf20 = close_arr[-2], ssf_20[-2]
 
-            # Check Monthly MACD Below Zero Crossover
+            # Check Monthly MACD Below Zero Crossover (Lookback = 3)
             m_macd_below_zero_buy = check_macd_monthly_below_zero(m_df, lookback=3)
             m_macd_status = "BULLISH (<0 CROSS)" if m_macd_below_zero_buy else "BEARISH / NO CROSS"
 
@@ -409,7 +414,7 @@ def update_portfolio_tracker_monthly():
             if not (now.weekday() > 4 or (now.weekday() == 4 and now.hour >= 16)):
                 w_df = w_df.iloc[:-1].copy()
 
-            # MODIFIED: Check Weekly MACD Crossover in last 5 weeks
+            # Check Weekly MACD Crossover in last 5 weeks
             w_macd_crossover = check_macd_weekly_crossover(w_df, lookback=5)
             w_macd_status = "BULLISH CROSS (5 WKS)" if w_macd_crossover else "NO CROSS"
 
@@ -488,7 +493,7 @@ for stock in stocks:
         if not w_df.empty:
             w_df = w_df.dropna(subset=['Close'])
 
-        # MODIFIED: Weekly MACD Crossover in last 5 weeks (above or below zero)
+        # Weekly MACD Crossover in last 5 weeks (above or below zero)
         w_macd_crossover = False
         if len(w_df) >= 35:
             w_macd_crossover = check_macd_weekly_crossover(w_df, lookback=5)
@@ -503,6 +508,7 @@ for stock in stocks:
 
             rsi_w = RSIIndicator(w_df['Close'], window=14).rsi()
             rsi_ma_w = rsi_w.rolling(14).mean()
+            # UPDATED: Cross lookback set to 6 weeks for weekly timeframe
             if (rolling_setup_weekly(w_df, 20) and rolling_cross(w_close, w_df['SSF_50'].values, 6) and 
                 rsi_w.iloc[-1] > rsi_ma_w.iloc[-1] and w_df['SSF_50'].iloc[-1] < w_df['SSF_200'].iloc[-1]):
                 
@@ -533,7 +539,7 @@ for stock in stocks:
         if not m_df.empty:
             m_df = m_df.dropna(subset=['Close'])
 
-        # Check Monthly MACD Below Zero Crossover
+        # Check Monthly MACD Below Zero Crossover (Lookback = 3 months)
         m_macd_below_zero_buy = False
         if len(m_df) >= 35:
             m_macd_below_zero_buy = check_macd_monthly_below_zero(m_df, lookback=3)
@@ -544,7 +550,6 @@ for stock in stocks:
         if m_macd_below_zero_buy and w_macd_crossover:
             macd_dual_below_zero_confirmed_stocks.append(stock)
 
-        # MODIFIED: Calculating SSF up to 100 instead of 250 for monthly
         if len(m_df) >= 100: 
             m_close = m_df['Close'].values
             m_df['SSF_20'] = super_smoother(m_close, 20)
@@ -553,11 +558,12 @@ for stock in stocks:
             
             rsi_m = RSIIndicator(m_df['Close'], window=14).rsi()
             rsi_ma_m = rsi_m.rolling(14).mean()
-            if (rolling_setup_monthly(m_df, 20) and rolling_cross(m_close, m_df['SSF_50'].values, 6) and 
+            # UPDATED: Cross lookback set to 3 months for monthly timeframe
+            if (rolling_setup_monthly(m_df, 20) and rolling_cross(m_close, m_df['SSF_50'].values, 3) and 
                 rsi_m.iloc[-1] > rsi_ma_m.iloc[-1]):
                 
                 score_m = rsi_m.iloc[-1] + ((m_close[-1] - m_df['SSF_50'].iloc[-1]) / m_df['SSF_50'].iloc[-1]) * 100
-                cross_delta_pct_m, months_since = get_crossover_details(m_close, m_df['SSF_50'].values, 6)
+                cross_delta_pct_m, months_since = get_crossover_details(m_close, m_df['SSF_50'].values, 3)
 
                 monthly_buy_scored.append((stock, score_m, cross_delta_pct_m, months_since))
             
